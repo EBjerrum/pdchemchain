@@ -1,0 +1,78 @@
+[build-system]
+requires = [
+    "setuptools >= 64",
+    "setuptools_scm[toml]>=6.2",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "pdchemchain/_version.py"
+
+# Metadata
+[project]
+name = "pdchemchain"
+dynamic = ["version"]
+description = "Chainable links for chemical processing of pandas dataframes"
+authors = [
+    { name = "Esben Jannik Bjerrum", email = "esben+cheminformania@gmail.com" }
+]
+requires-python = ">=3.7"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Utilities",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX",
+    "Operating System :: Unix",
+    "Operating System :: MacOS"
+]
+
+# Optional fields
+urls = { homepage = "https://github.com/EBjerrum/pdchemchain" }
+license = { file = "LICENSE" }
+readme = { file = "README.md", content-type = "text/markdown" }
+
+
+dependencies = [
+"rdkit",
+"pandas",
+"pyyaml",
+"click",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6",
+    "pytest-cov",
+    "jupytext"
+]
+
+[project.scripts]
+pdchemchain = "pdchemchain.scripts:pdchemchain"
+
+[tool.setuptools.packages.find]
+exclude = ["tests/*", "notebooks/*"]
+
+
+[tool.pytest.ini_options]
+addopts = ["-v"]
+
+[tool.coverage.run]
+source = ["pdChemChain"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if MYPY:",
+    "^\\s+[.][.][.]$"
+]
