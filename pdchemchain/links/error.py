@@ -40,6 +40,6 @@ class StripErrors(Link):
 
         if self.filename and not error_df.empty:
             self.logger.info(f"Saving rows with errors in {self.filename}.")
-            df_process_to_csv(self.filename)
+            df_process_to_csv(error_df, self.filename)
 
         return noerrors_df
