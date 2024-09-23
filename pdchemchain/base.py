@@ -22,7 +22,8 @@ class SelfConfigurable:
     # Sets both configuration on logging, and on objects instantiated logger. Synchronized to avoid confusion, but local changes in level are then not doable.
     def set_log_level(self, level_str: str = "debug"):
         level = logging.getLevelName(level_str.upper())
-        logging.basicConfig(level=level)
+        logging.getLogger().setLevel(level=level)
+
         self.logger.setLevel(level=level)
 
     def __post_init__(self):
