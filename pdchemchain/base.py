@@ -13,7 +13,7 @@ import pandas as pd
 
 from pdchemchain.errormanager import has_error
 from pdchemchain.io_utilities import load_chain, save_chain
-from pdchemchain.logging import logger, logging
+from pdchemchain.logging import logger, logging, RowLogger
 from pdchemchain.typing import InColumnName
 
 
@@ -201,6 +201,7 @@ class Link(ABC, SelfConfigurable):
         pd.DataFrame
     ):  # TODO Calling .apply directly will circumvvent the incolumn assertation.
         """Method that does something to the dataframe"""
+        # To log to the row, use as example self.
 
     def __add__(self, other):
         if not other:
@@ -259,6 +260,12 @@ class RowLink(Link):
     new values for new columns can be directly set like example row[self.out_column] = new_value
     """
 
+    def __post_init__(self):
+        super().__post_init__()
+        self.row_logger = RowLogger(
+            self
+        )  # Instantiate the row_logger, enabling easy logging of messages to a "__log__" column on a specific row
+
     def _apply(
         self, df
     ):  # TODO, the class hiearachy probably need to be modified, so that RowLink are not inheriting Link, but rather a common BaseLink class
@@ -298,6 +305,8 @@ class RowLink(Link):
     @abstractmethod
     def _row_apply(self, row: pd.Series) -> pd.Series:
         # Do something with the row, e.g. row["mol"] = Chem.MolFromSmiles(row["Smiles"])
+        # To log to the row, use as example self.row_logger.debug(message)
+        # To log to the main logger, use as example self.logger.info(message)
         return row
 
 
