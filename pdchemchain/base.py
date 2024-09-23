@@ -201,7 +201,11 @@ class Link(ABC, SelfConfigurable):
         pd.DataFrame
     ):  # TODO Calling .apply directly will circumvvent the incolumn assertation.
         """Method that does something to the dataframe"""
-        # To log to the row, use as example self.
+        # Full access to the dataframe for manipulation.
+        # NB if calculations goes beyond a single row, the link will become incompatible with the Partitioned links from the hpc module
+        # To log to the error column df = self.append_errors(df, errors) with errors being a pd.Series the same length as df
+        # Rows that doesn't need errors should have None or pd.nan
+        # to log to the row log column df = self.append_log(df, log) with log being a pd.Series the same length as df
 
     def __add__(self, other):
         if not other:
@@ -226,13 +230,23 @@ class Link(ABC, SelfConfigurable):
             )
         return str1 if pd.notna(str1) else str2
 
+    def append_to_column(
+        self, df: pd.DataFrame, data: pd.Series, column_name: str
+    ) -> pd.DataFrame:
+        """Append data to existing specified column, or create a new one."""
+        if column_name not in df:
+            df[column_name] = data
+        else:
+            df[column_name] = df[column_name].combine(data, self._concatenate_strings)
+        return df
+
     def append_errors(self, df: pd.DataFrame, errors: pd.Series) -> pd.DataFrame:
         """Append errors to existing error column, or create a new one."""
-        if "__error__" not in df:
-            df["__error__"] = errors
-        else:
-            df["__error__"] = df["__error__"].combine(errors, self._concatenate_strings)
-        return df
+        return self.append_to_column(df, errors, "__error__")
+
+    def append_log(self, df: pd.DataFrame, log: pd.Series) -> pd.DataFrame:
+        """Append log to existing log column, or create a new one."""
+        return self.append_to_column(df, log, "__log__")
 
     def assert_incolumns(self, dataframe: pd.DataFrame):
         """Assert that the dataframe contains the fields that are typehinted as InColumnName in the dataclass definition"""
