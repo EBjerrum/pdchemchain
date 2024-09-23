@@ -149,3 +149,24 @@ class Query(Link):
                 f"No query defined ({self.query=}), returning dataframe unchanged. This may not be what you inteded."
             )
         return df_query
+
+
+@dataclass
+class RenameColumns(Link):
+    """Renames columns in the dataframe based on a provided mapping"""
+
+    columns: dict[str, str] = field(default_factory=dict)
+
+    def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.columns:
+            df_renamed = df.rename(columns=self.columns)
+            renamed_cols = set(self.columns.keys()) & set(df.columns)
+            self.logger.debug(
+                f"Renamed {len(renamed_cols)} columns: {', '.join(renamed_cols)}"
+            )
+        else:
+            df_renamed = df
+            self.logger.warning(
+                f"No column mapping defined ({self.columns=}), returning dataframe unchanged. This may not be what you intended."
+            )
+        return df_renamed
