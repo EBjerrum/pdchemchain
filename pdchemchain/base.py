@@ -69,20 +69,6 @@ class SelfConfigurable:
 
     # Inspired from https://github.com/scikit-learn/scikit-learn/blob/714c50092/sklearn/base.py#L178
     def get_params(self, defaults=True, version=True, log_level=True):
-        """
-        Get parameters for this link
-
-        Parameters
-        ----------
-        deep : bool, default=True
-            If True, will return the parameters for this link and
-            contained subobjects that are links
-
-        Returns
-        -------
-        params : dict
-            Parameter names mapped to their values.
-        """
         out = dict()
 
         if version:
