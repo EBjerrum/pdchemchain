@@ -171,6 +171,36 @@ class MolFromSmiles(RowLink):
 
 
 @dataclass
+class MolToInChI(RowLink):
+    """Converts RDKit molecular objects to InChI strings or keys
+
+    https://en.wikipedia.org/wiki/International_Chemical_Identifier
+
+    Molecules are converted row-wise.
+
+    Parameters
+    ----------
+    in_column
+        The label for the column containing the molecules to convert
+    out_column
+        The label for the column that should store the SMILES strings
+    generate_keys=False
+        Whether to generate the key
+    """
+
+    in_column: InColumnName = "ROMol"
+    out_column: str = "InChI"
+    generate_keys: bool =False
+
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        if self.generate_keys:
+            row[self.out_column] = Chem.inchi.MolToInchiKey(row[self.in_column])
+        else:
+            row[self.out_column] = Chem.inchi.MolToInchi(row[self.in_column])
+        return row
+
+
+@dataclass
 class MolToSmiles(RowLink):
     """Converts RDKit molecular objects to SMILES strings.
 
@@ -346,6 +376,34 @@ class RemoveStereoMol(RowLink):
             row[self.in_column]
         )  # TODO, whats most efficient, working on copies of the rows/objects or simply copy the dataframe?
         Chem.RemoveStereochemistry(mol)  # This mutates the input column?
+        row[self.out_column] = mol
+        return row
+
+
+@dataclass
+class RemoveAtomMapping(RowLink):
+    """Remove atommap information from the molecular object
+
+    The out_column label can be the same as the in_column label,
+    in which case the input molecules will get substituted with the converted ones
+
+    Parameters
+    in_column
+        The label for the column containing the molecules to strip stereo information from
+    out_column
+        The label for the column that should store the converted molecules
+    """
+
+    in_column: InColumnName = "ROMol"
+    out_column: str = "ROMol"
+
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        mol = copy.deepcopy(
+            row[self.in_column]
+        ) 
+        for atom in mol.GetAtoms():
+            atom.SetAtomMapNum(0) #Setting for 0 removed it
+        
         row[self.out_column] = mol
         return row
 
