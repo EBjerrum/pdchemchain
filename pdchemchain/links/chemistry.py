@@ -14,6 +14,50 @@ from pdchemchain.typing import InColumnName
 
 
 @dataclass
+class ABMPSScore(RowLink):
+    """Calculate AB-MPS score
+    
+    Calculates the AB-MPS score defined as: abs(cLogP - 3) + NumAromaticRings + NumRotatableBonds
+    
+    This score provides a simple metric for evaluate bRo5 chemical matter, 
+    with AB-MPS values of ≤14 predicting a higher probability of success.
+    
+    Reference: Beyond the Rule of 5: Lessons Learned from AbbVie's Drugs and Compound Collection
+    https://doi.org/10.1021/acs.jmedchem.7b00717
+    
+    Parameters
+    ----------
+    in_column
+        The label for the column containing the molecules to analyze
+    out_column
+        The label for the column that should store the AB-MPS score
+    """
+    
+    in_column: InColumnName = "ROMol"
+    out_column: str = "AB_MPS_Score"
+    
+    def __post_init__(self):
+        super().__post_init__()
+        # Set up descriptor calculator for the three needed descriptors
+        descriptors = ["MolLogP", "NumAromaticRings", "NumRotatableBonds"]
+        self.calculator = MolecularDescriptorCalculator(descriptors)
+    
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        mol = row[self.in_column]
+        if isinstance(mol, Chem.Mol):
+            # Calculate the three descriptors
+            clogp, num_aromatic_rings, num_rotatable_bonds = self.calculator.CalcDescriptors(mol)
+            
+            # Calculate AB-MPS score: abs(cLogP - 3) + NAR + NRB
+            ab_mts_score = abs(clogp - 3) + num_aromatic_rings + num_rotatable_bonds
+            
+            row[self.out_column] = ab_mts_score
+        else:
+            raise ValueError(f"Seemingly not a Mol object: {mol} of type {type(mol)}")
+        return row
+
+
+@dataclass
 class ElementsInList(RowLink):
     """Checks if a given molecule only has certain elements
 
@@ -322,20 +366,44 @@ class RDKitDescriptors(RowLink):
     in_column
         The label for the column containing the molecules to analyze
     descriptors
-        A list of RDKit descriptors to calculate
+        A list of RDKit descriptors to calculate. If none provided or empty list, all available descriptors will be added.
     """
 
     in_column: InColumnName = "ROMol"
     descriptors: List[str] = field(
         default_factory=lambda: ["MolWt", "MolLogP", "NumHAcceptors", "NumHDonors"]
     )
-    # TODO, add functions to list available descriptos, check if descriptors in list are correct, and update descriptors on object (and calculator)
-    # TODO, possibility to add prefix or suffix to descriptor names, as well as provide custom list
-    # TODO, check that we don't overwrite existing columns
 
+    @classmethod
+    def get_available_descriptors(cls) -> List[str]:
+        """List of names of all available descriptors"""
+        return [descriptor[0] for descriptor in Descriptors._descList]
+    
+    @property
+    def available_descriptors(self) -> List[str]:
+        """List of names of all available descriptors"""
+        return self.get_available_descriptors()
+    
     def __post_init__(self):
         super().__post_init__()
+        # Validate descriptors and set up calculator
+        available_descriptors = self.available_descriptors
+        if self.descriptors:
+            unknown_descriptors = [
+                desc_name
+                for desc_name in self.descriptors
+                if desc_name not in available_descriptors
+            ]
+            if unknown_descriptors:
+                raise ValueError(f"Unknown descriptor names {unknown_descriptors} specified. Available descriptors can be found with RDKitDescriptors.get_available_descriptors()")
+        else:
+            # If no descriptors specified, use all available ones
+            self.descriptors = available_descriptors
+        
         self.calculator = MolecularDescriptorCalculator(self.descriptors)
+    #TODO, make the calculator object reinstantiated if descriptors are updated
+
+    #TODO, check that we don't overwrite existing columns
 
     def _row_apply(self, row: pd.Series) -> pd.Series:
         mol = row[self.in_column]
