@@ -4,7 +4,7 @@ from typing import List
 
 import pandas as pd
 from rdkit import Chem
-from rdkit.Chem import Descriptors, PandasTools
+from rdkit.Chem import Descriptors, PandasTools, RDConfig, rdFingerprintGenerator
 from rdkit.Chem.MolStandardize import rdMolStandardize
 from rdkit.ML.Descriptors.MoleculeDescriptors import MolecularDescriptorCalculator
 
@@ -530,4 +530,24 @@ class SuperParent(RowLink):
         else:
             mol = rdMolStandardize.SuperParent(mol)
         row[self.out_column] = mol
+        return row
+
+
+@dataclass
+class TanimotoSimilarity(RowLink):
+    target_smiles: str
+    in_column: InColumnName = "ROMol"
+    out_column: str = "TanimotoSimilarity"
+    radius: int = 2
+    #TODO make different fingerprints optionally
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.fingerprinter = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+        self.target_fingerprint = self.fingerprinter.GetFingerprint(Chem.MolFromSmiles(self.target_smiles))
+
+    
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        mol_fp = self.fingerprinter.GetFingerprint(row[self.in_column])
+        row[self.out_column]  = Chem.DataStructs.TanimotoSimilarity(mol_fp, self.target_fingerprint) #OBS consider directionality for other sim-metrics if refactored
         return row
