@@ -36,8 +36,7 @@ via the `.get_params()` method, a dictionary with all information to recreate th
 For easy referal in interactive mode, a toolbox class is available, that gives an overview of the current classes and hints on their usage.
 
 ```python
-from pdchemchain import LinkToolBox
-toolbox = LinkToolBox()
+from pdchemchain import toolbox
 toolbox
 ```
 
@@ -82,6 +81,181 @@ pip install git+https://github.com/EBjerrum/pdchemchain.git
 ## Documentation
 
 Currently only a couple of notebook tutorials are available, be sure to look through the code for already created Links before you implement your own
+
+## Command Line Usage
+
+pdchemchain includes a powerful CLI for running saved pipelines on data files. The CLI supports both CSV and SDF (Structure Data File) formats with automatic format detection.
+
+### Basic Syntax
+
+```bash
+pdchemchain run <config_file> [OPTIONS]
+```
+
+Where `config_file` is a YAML or JSON file containing your saved pipeline configuration.
+
+### Quick Examples
+
+```bash
+# Process CSV file
+pdchemchain run pipeline.yaml --in_file input.csv --out_file output.csv
+
+# Process SDF file (auto-detected from extension)
+pdchemchain run pipeline.yaml --in_file molecules.sdf --out_file results.sdf
+
+# Convert between formats
+pdchemchain run pipeline.yaml --in_file molecules.sdf --out_file results.csv
+
+# With error file for failed rows
+pdchemchain run pipeline.yaml --in_file input.sdf --out_file output.sdf --error_file errors.sdf
+```
+
+### File Format Auto-Detection
+
+The CLI automatically detects file formats from extensions:
+- **SDF format**: `.sdf`, `.sd`
+- **CSV format**: `.csv`, `.tsv`, `.txt`, and any other extension
+
+You can override auto-detection using `--in_format` and `--out_format` flags:
+
+```bash
+# Override for unusual extensions
+pdchemchain run pipeline.yaml --in_file data.txt --in_format csv --out_file results.dat --out_format sdf
+```
+
+### CSV Separator Detection
+
+For CSV files, the separator is auto-detected by pandas when not specified:
+
+```bash
+# Auto-detect separator (comma, tab, etc.)
+pdchemchain run pipeline.yaml --in_file data.csv --out_file results.csv
+
+# Specify separator explicitly
+pdchemchain run pipeline.yaml --in_file data.tsv --sep "\t" --out_file results.csv
+```
+
+### SDF File Handling
+
+#### Molecule Column Convention
+
+SDF files use the **"ROMol"** column name by default for molecule objects. If your pipeline uses a different column name, specify it:
+
+```bash
+pdchemchain run pipeline.yaml --in_file mols.sdf --mol_column Molecule --out_file results.sdf
+```
+
+#### Handling None/Failed Molecules
+
+When processing molecules, some may fail to parse or convert (e.g., invalid SMILES). pdchemchain handles these gracefully when writing to SDF:
+
+**Automatic placeholder substitution:**
+- Failed molecules (None values) are replaced with **error placeholder molecules**
+- Placeholders are wildcard atoms (`*`) with:
+  - MolWt = 0.00 (clearly distinguishable)
+  - Atom label = "ERROR" (visible in molecular viewers)
+  - Molecule name = "ERROR_NO_MOLECULE"
+
+**Example workflow:**
+
+```python
+from pdchemchain.links import MolFromSmiles, ToSDF
+import pandas as pd
+
+# Some SMILES will fail to parse
+df = pd.DataFrame({
+    'Smiles': ['C', 'CC', 'INVALID_SMILES', 'CCC'],
+    'name': ['methane', 'ethane', 'failed', 'propane']
+})
+
+# ToSDF with handle_none=True replaces None molecules with placeholders
+link = MolFromSmiles() + ToSDF('output.sdf', handle_none=True)
+link(df)
+```
+
+**Round-trip support:**
+
+```python
+from pdchemchain.links import FromSDF
+
+# Load and recognize placeholders, converting back to None
+df = FromSDF('output.sdf', recognize_placeholders=True)()
+
+# df now has None for molecules that failed originally
+```
+
+### Error File Handling
+
+Use `--error_file` to save rows that encountered errors during processing:
+
+```bash
+# Error file format auto-detected (same as output)
+pdchemchain run pipeline.yaml --in_file input.csv --out_file output.sdf --error_file errors.sdf
+```
+
+**Error file features:**
+- Automatically includes error messages in the output
+- For SDF format: Failed molecules use placeholder molecules (see above)
+- For CSV format: Error tracebacks written directly
+- `__error__` column renamed to `ERROR` in SDF (RDKit compatibility)
+
+### Advanced Options
+
+```bash
+# Pass pandas read options
+pdchemchain run pipeline.yaml --in_file data.csv --pd_read_option header=0 --pd_read_option encoding=utf-8
+
+# Pass pandas write options
+pdchemchain run pipeline.yaml --in_file input.csv --out_file output.csv --pd_write_option index=False
+
+# SDF-specific options (prefix with sdf_)
+pdchemchain run pipeline.yaml --in_file mols.sdf --pd_read_option sdf_removeHs=False
+
+# Set debug level
+pdchemchain run pipeline.yaml --in_file input.csv --debug_level DEBUG
+
+# Use custom link definitions
+pdchemchain run pipeline.yaml --in_file input.csv --custom_links my_links.py
+```
+
+### Full CLI Reference
+
+```bash
+pdchemchain run --help
+```
+
+**Key options:**
+- `--in_file PATH`: Input file path (CSV or SDF)
+- `--out_file PATH`: Output file path (CSV or SDF)
+- `--in_format [csv|sdf]`: Override input format detection
+- `--out_format [csv|sdf]`: Override output format detection
+- `--mol_column TEXT`: Molecule column name for SDF files (default: "ROMol")
+- `--error_file PATH`: Error file path for failed rows
+- `--sep TEXT`: CSV separator (default: auto-detect)
+- `--pd_read_option TEXT`: Extra pandas read options (keyword=value, repeatable)
+- `--pd_write_option TEXT`: Extra pandas write options (keyword=value, repeatable)
+- `--debug_level TEXT`: Logging level (DEBUG, INFO, WARNING, ERROR)
+- `--custom_links PATH`: Python file with custom link definitions
+
+### Creating Pipeline Configuration Files
+
+Save your interactive pipeline to a config file:
+
+```python
+from pdchemchain.links import MolFromSmiles, HeavyAtomCount
+
+# Build pipeline interactively
+chain = MolFromSmiles() + HeavyAtomCount()
+
+# Save to config file
+chain.to_config_file('pipeline.yaml')
+```
+
+Then run from command line:
+
+```bash
+pdchemchain run pipeline.yaml --in_file molecules.csv --out_file results.csv
+```
 
 ## Custom links
 

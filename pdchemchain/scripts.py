@@ -3,13 +3,42 @@ import pandas as pd
 
 from pdchemchain import Link
 from pdchemchain.io_utilities import load_dict
-from pdchemchain.links import FromFile, StripErrors, ToFile
+from pdchemchain.links import FromFile, FromSDF, StripErrors, ToFile, ToSDF
 from pdchemchain.logging import logger
 
 
 @click.group()
 def pdchemchain():
     pass
+
+
+def detect_file_format(filename: str) -> str:
+    """
+    Detect file format from file extension.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the file
+
+    Returns
+    -------
+    str
+        Detected format: 'sdf' or 'csv'
+
+    Notes
+    -----
+    Falls back to 'csv' for unknown extensions.
+    """
+    if filename is None:
+        return "csv"
+
+    ext = filename.lower().split(".")[-1]
+    if ext in ["sdf", "sd"]:
+        return "sdf"
+    else:
+        # Default to csv for .csv, .tsv, .txt, and unknown extensions
+        return "csv"
 
 
 def import_all_from_path(file_path: str) -> None:
@@ -39,6 +68,9 @@ def import_all_from_path(file_path: str) -> None:
 
 def process_data(
     in_file,
+    in_format,
+    out_format,
+    mol_column,
     sep,
     config_file,
     error_file,
@@ -49,14 +81,14 @@ def process_data(
     pd_write_options,
 ):
     if pd_read_options:
-        logger.info("Parsing options for csv reading.")
+        logger.info("Parsing options for file reading.")
         pd_read_options = dict(kv.split("=") for kv in pd_read_options)
         logger.debug(f"pandas read options {pd_read_options}")
     else:
         pd_read_options = {}
 
     if pd_write_options:
-        logger.info("Parsing options for csv writing.")
+        logger.info("Parsing options for file writing.")
         pd_write_options = dict(kv.split("=") for kv in pd_write_options)
         logger.debug(f"pandas write options {pd_write_options}")
     else:
@@ -73,8 +105,35 @@ def process_data(
 
     df = pd.DataFrame()
 
+    # Auto-detect input format if not specified
     if in_file:
-        read_file = FromFile(in_file, pd_readcsv_options=pd_read_options)
+        if in_format is None:
+            in_format = detect_file_format(in_file)
+            logger.info(f"Auto-detected input format: {in_format}")
+
+        if in_format.lower() == "csv":
+            # For CSV, use sep if provided, otherwise let pandas auto-detect
+            if sep and "sep" not in pd_read_options:
+                pd_read_options["sep"] = sep
+            elif "sep" not in pd_read_options:
+                # Let pandas auto-detect separator using csv.Sniffer
+                pd_read_options["sep"] = None
+                logger.info("No separator specified, pandas will auto-detect")
+
+            read_file = FromFile(in_file, pd_readcsv_options=pd_read_options)
+        elif in_format.lower() == "sdf":
+            # Extract SDF-specific options (prefixed with sdf_)
+            sdf_read_opts = {
+                k.replace("sdf_", ""): v
+                for k, v in pd_read_options.items()
+                if k.startswith("sdf_")
+            }
+            read_file = FromSDF(
+                in_file, mol_column=mol_column, sdf_load_options=sdf_read_opts
+            )
+        else:
+            raise ValueError(f"Unsupported input format: {in_format}")
+
         df = read_file(df)
 
     df = chain(df)
@@ -83,13 +142,73 @@ def process_data(
         strip = StripErrors()
         df = strip(df)
         if not strip.error_df.empty:
+            # Auto-detect error file format
+            error_format = detect_file_format(error_file)
             logger.warning(
-                f"{len(strip.has_errors)} rows with errors found after processing, saving to {error_file}"
+                f"{len(strip.error_df)} rows with errors found after processing, saving to {error_file} as {error_format}"
             )
-            strip.error_df.to_csv(error_file)
 
+            if error_format.lower() == "csv":
+                strip.error_df.to_csv(error_file)
+            elif error_format.lower() == "sdf":
+                # For SDF, need molecule column
+                if mol_column not in strip.error_df.columns:
+                    raise ValueError(
+                        f"Cannot write error file as SDF: molecule column '{mol_column}' not found. "
+                        f"Available columns: {list(strip.error_df.columns)}. "
+                        f"Please use a CSV error file instead (e.g., --error_file errors.csv)"
+                    )
+
+                # Prepare error dataframe - rename __error__ to ERROR for SDF compatibility
+                # (RDKit filters out properties starting with underscore)
+                error_df_copy = strip.error_df.copy()
+                if "__error__" in error_df_copy.columns:
+                    error_df_copy["ERROR"] = error_df_copy["__error__"]
+                    error_df_copy = error_df_copy.drop(columns=["__error__"])
+
+                # Select properties to write (exclude mol column and __log__)
+                error_props = [
+                    col
+                    for col in error_df_copy.columns
+                    if col != mol_column and col != "__log__"
+                ]
+
+                # Use ToSDF with handle_none="warn" to replace None molecules
+                error_write_link = ToSDF(
+                    error_file,
+                    mol_column=mol_column,
+                    properties=error_props,
+                    handle_none="warn",  # Replace None with placeholder molecules and log
+                )
+                error_write_link(error_df_copy)
+            else:
+                strip.error_df.to_csv(error_file)
+
+    # Auto-detect output format if not specified
     if out_file:
-        write_file = ToFile(out_file, pd_tocsv_options=pd_write_options)
+        if out_format is None:
+            out_format = detect_file_format(out_file)
+            logger.info(f"Auto-detected output format: {out_format}")
+
+        if out_format.lower() == "csv":
+            # For CSV, use sep if provided
+            if sep and "sep" not in pd_write_options:
+                pd_write_options["sep"] = sep
+
+            write_file = ToFile(out_file, pd_tocsv_options=pd_write_options)
+        elif out_format.lower() == "sdf":
+            # Extract SDF-specific options (prefixed with sdf_)
+            sdf_write_opts = {
+                k.replace("sdf_", ""): v
+                for k, v in pd_write_options.items()
+                if k.startswith("sdf_")
+            }
+            write_file = ToSDF(
+                out_file, mol_column=mol_column, sdf_write_options=sdf_write_opts
+            )
+        else:
+            raise ValueError(f"Unsupported output format: {out_format}")
+
         write_file(df)
 
 
@@ -99,46 +218,70 @@ def process_data(
     "--in_file",
     default=None,
     type=click.Path(exists=True, readable=True),
-    help="Optional input file path",
+    help="Input file path (CSV or SDF)",
 )
 @click.option(
     "--out_file",
     default=None,
     type=click.Path(writable=True),
-    help="Optional output file path",
+    help="Output file path (CSV or SDF)",
+)
+@click.option(
+    "--in_format",
+    default=None,
+    type=click.Choice(["csv", "sdf"], case_sensitive=False),
+    help="Input format (csv or sdf). Auto-detected from extension if not specified.",
+)
+@click.option(
+    "--out_format",
+    default=None,
+    type=click.Choice(["csv", "sdf"], case_sensitive=False),
+    help="Output format (csv or sdf). Auto-detected from extension if not specified.",
+)
+@click.option(
+    "--mol_column",
+    default="ROMol",
+    type=str,
+    help='Molecule column name for SDF files (default: "ROMol")',
 )
 @click.option(
     "--error_file",
     default=None,
     type=click.Path(writable=True),
-    help="Optional error file path",
+    help="Error file path for rows with errors (CSV or SDF, auto-detected from extension)",
 )
 @click.option(
-    "--sep", type=str, default=",", help='Seperator for the input file, default=","'
+    "--sep",
+    type=str,
+    default=None,
+    help='Separator for CSV files (default: auto-detect). Common values: "," "\\t" ";"',
 )
 @click.option("--debug_level", type=str, default=None, help="Optional debug level")
 @click.option(
     "--custom_links",
     default=None,
     type=click.Path(exists=True, readable=True),
-    help="Optional file with custom links configured as belonging to __main__. scope in config",
+    help="Optional file with custom links configured as belonging to __main__ scope in config",
 )
 @click.option(
     "--pd_read_option",
     multiple=True,
     default=None,
-    help="Extra options for Pandas read_csv() written as keyword=value. Multiple options can be repeated by using --pd_read_option multiple times.",
+    help="Extra options for file reading written as keyword=value. For SDF options, prefix with 'sdf_' (e.g., sdf_removeHs=False). Multiple options can be specified by using --pd_read_option multiple times.",
 )
 @click.option(
     "--pd_write_option",
     multiple=True,
     default=None,
-    help="Extra options for Pandas to_csv() written as single keyword=value. Multiple options can be set by using --pd_write_option multiple times.",
+    help="Extra options for file writing written as keyword=value. For SDF options, prefix with 'sdf_' (e.g., sdf_allNumeric=True). Multiple options can be specified by using --pd_write_option multiple times.",
 )
 def run(
     config_file,
     in_file,
     out_file,
+    in_format,
+    out_format,
+    mol_column,
     error_file,
     sep,
     debug_level,
@@ -146,9 +289,35 @@ def run(
     pd_read_option,
     pd_write_option,
 ):
-    """CONFIG_FILE: the json/yaml file with the specification for the pdchemchain chain or link."""
+    """CONFIG_FILE: the json/yaml file with the specification for the pdchemchain chain or link.
+
+    Examples:
+
+    \b
+    # Read SDF, process, write SDF (auto-detected)
+    pdchemchain run pipeline.yaml --in_file mols.sdf --out_file results.sdf
+
+    \b
+    # Read SDF, write CSV (format conversion)
+    pdchemchain run pipeline.yaml --in_file mols.sdf --out_file results.csv
+
+    \b
+    # Override auto-detection
+    pdchemchain run pipeline.yaml --in_file data.txt --in_format csv --sep "\\t"
+
+    \b
+    # Custom molecule column name
+    pdchemchain run pipeline.yaml --in_file mols.sdf --mol_column Molecule --out_file results.sdf
+
+    \b
+    # Pass SDF-specific options
+    pdchemchain run pipeline.yaml --in_file mols.sdf --pd_read_option sdf_removeHs=False
+    """
     process_data(
         in_file,
+        in_format,
+        out_format,
+        mol_column,
         sep,
         config_file,
         error_file,

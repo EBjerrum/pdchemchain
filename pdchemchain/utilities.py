@@ -90,3 +90,53 @@ def assert_import_dependency(package_name: str, install_name=None):
             install_name = package_name
         raise ImportError(f"""The '{package_name}' package is required but not installed.
                           Please install it using 'pip install {install_name}'.""")
+
+
+def get_error_placeholder_molecule():
+    """
+    Create a placeholder molecule for error rows in SDF files.
+
+    This function creates a wildcard atom (*) with "ERROR" as the atom alias,
+    used as a placeholder when writing error DataFrames to SDF files where the
+    molecule column contains None values (e.g., when SMILES parsing failed).
+
+    Returns
+    -------
+    rdkit.Chem.rdchem.Mol
+        A molecule with a single wildcard atom (*) labeled as "ERROR"
+
+    Notes
+    -----
+    The placeholder molecule has these properties:
+    - Atomic number: 0 (wildcard/any atom)
+    - MolWt: 0.00 (clearly distinguishable from real molecules)
+    - Atom alias: "ERROR" (displays in molecular viewers)
+    - Molecule name: "ERROR_NO_MOLECULE"
+
+    This ensures that:
+    - Error molecules are visually obvious in molecular viewers
+    - Property calculations return distinguishable values (e.g., MolWt=0)
+    - Downstream tools won't mistake them for real molecules
+
+    Examples
+    --------
+    >>> from pdchemchain.utilities import get_error_placeholder_molecule
+    >>> error_mol = get_error_placeholder_molecule()
+    >>> from rdkit.Chem import Descriptors
+    >>> Descriptors.MolWt(error_mol)
+    0.0
+    >>> error_mol.GetProp('_Name')
+    'ERROR_NO_MOLECULE'
+    """
+    from rdkit import Chem
+
+    # Create wildcard atom molecule
+    dummy_mol = Chem.MolFromSmiles("*")
+    dummy_mol.SetProp("_Name", "ERROR_NO_MOLECULE")
+
+    # Set atom alias to "ERROR" - this displays in molecular viewers
+    atom = dummy_mol.GetAtomWithIdx(0)
+    atom.SetProp("atomLabel", "ERROR")
+    atom.SetProp("molFileAlias", "ERROR")
+
+    return dummy_mol

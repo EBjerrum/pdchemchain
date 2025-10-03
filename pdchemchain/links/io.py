@@ -117,13 +117,27 @@ class FromSDF(Link):
         Path to the SDF file to read
     mol_column : str
         Column name for RDKit molecule objects (default: "ROMol")
+    recognize_placeholders : bool
+        If True, recognizes error placeholder molecules (created by ToSDF with handle_none)
+        and converts them back to None. Placeholder molecules are identified by having:
+        - Exactly 1 atom
+        - Atomic number 0 (wildcard)
+        - Molecule name "ERROR_NO_MOLECULE"
+        Default: False
     sdf_load_options : Dict[str, any]
         Additional keyword arguments passed to PandasTools.LoadSDF
         Common options: removeHs (bool), sanitize (bool), strictParsing (bool)
+
+    Notes
+    -----
+    Use recognize_placeholders=True when loading SDF files that were written with
+    ToSDF(handle_none=True) to restore None values for molecules that failed processing.
+    This enables proper round-trip handling of error rows.
     """
 
     filename: str
     mol_column: str = "ROMol"
+    recognize_placeholders: bool = True
     sdf_load_options: Dict[str, any] = field(default_factory=dict)
 
     def apply(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
@@ -149,6 +163,27 @@ class FromSDF(Link):
             self.filename, molColName=self.mol_column, **self.sdf_load_options
         )
 
+        # Recognize and convert error placeholder molecules back to None
+        if self.recognize_placeholders and self.mol_column in df.columns:
+            placeholder_count = 0
+
+            for idx, mol in df[self.mol_column].items():
+                if mol is not None:
+                    # Check if this is an error placeholder molecule
+                    if (
+                        mol.GetNumAtoms() == 1
+                        and mol.GetAtomWithIdx(0).GetAtomicNum() == 0
+                        and mol.HasProp("_Name")
+                        and mol.GetProp("_Name") == "ERROR_NO_MOLECULE"
+                    ):
+                        df.at[idx, self.mol_column] = None
+                        placeholder_count += 1
+
+            if placeholder_count > 0:
+                self.logger.info(
+                    f"Converted {placeholder_count} error placeholder molecules back to None"
+                )
+
         self.logger.info(
             f"Loaded dataframe from SDF file {self.filename}, "
             f"dataframe has {len(df)} rows."
@@ -173,18 +208,55 @@ class ToSDF(Link):
     properties : Optional[List[str]]
         List of column names to write as SD properties.
         If None (default), writes all columns except the molecule column.
+    handle_none : str
+        How to handle None/missing molecules. Options:
+        - False: Fail if None molecules are present (safe but strict behavior)
+        - True or "warn": Replace None with error placeholder molecules and log warning (default)
+        - "silent": Replace None with error placeholder molecules without warning
+        Default: True
     sdf_write_options : Dict[str, any]
         Additional keyword arguments passed to PandasTools.WriteSDF
         Common options: allNumeric (bool)
+
+    Notes
+    -----
+    When handle_none is True or "warn"/"silent", None molecules are replaced with
+    wildcard atoms (*) labeled "ERROR" with MolWt=0. This allows saving error rows
+    to SDF while making it obvious they are placeholders. Use FromSDF with
+    recognize_placeholders=True to convert them back to None on loading.
     """
 
     filename: str
     mol_column: InColumnName = "ROMol"
     properties: Optional[List[str]] = None
+    handle_none: bool | str = True
     sdf_write_options: Dict[str, any] = field(default_factory=dict)
 
     def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
         from rdkit.Chem import PandasTools
+
+        df_copy = df.copy()
+
+        # Handle None molecules if requested
+        if self.handle_none:
+            none_count = df_copy[self.mol_column].isna().sum()
+
+            if none_count > 0:
+                from pdchemchain.utilities import get_error_placeholder_molecule
+
+                dummy_mol = get_error_placeholder_molecule()
+
+                # Warn unless silent mode
+                if self.handle_none != "silent":
+                    self.logger.warning(
+                        f"Replacing {none_count} None molecules with error placeholder molecules "
+                        f"(wildcard atoms with 'ERROR' label)"
+                    )
+
+                # Replace None values with placeholder
+                df_copy.loc[df_copy[self.mol_column].isna(), self.mol_column] = (
+                    dummy_mol
+                )
 
         # Determine which properties to write
         props = self.properties
@@ -192,12 +264,12 @@ class ToSDF(Link):
             # Write all columns except molecule column and dunder columns
             props = [
                 col
-                for col in df.columns
+                for col in df_copy.columns
                 if col != self.mol_column and not col.startswith("__")
             ]
 
         PandasTools.WriteSDF(
-            df,
+            df_copy,
             self.filename,
             molColName=self.mol_column,
             properties=props,
