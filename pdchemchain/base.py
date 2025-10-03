@@ -312,6 +312,116 @@ class RowLink(Link):
 
 
 @dataclass
+class ExpandableRowLink(Link):
+    """Base class for row-wise operations that expand to multiple rows with proper ID tracking
+    
+    Developers only need to implement _row_expand(row) -> DataFrame.
+    The base class automatically handles:
+    - __id__ creation and grouping  
+    - __enum_id__ sequential assignment
+    - Group-level error isolation
+    - Existing row error pass-through
+    
+    All subclasses must be @dataclasses and overload the _row_expand(self, row: pd.Series) -> pd.DataFrame method
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.row_logger = RowLogger(self)
+
+    def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Ensure __id__ exists
+        if '__id__' not in df.columns:
+            df['__id__'] = range(len(df))
+        
+        # Process each compound group independently
+        result_groups = []
+        for compound_id, group_df in df.groupby('__id__'):
+            try:
+                expanded_group = self._process_group(group_df)
+                result_groups.append(expanded_group)
+            except Exception as e:
+                # Group-level error handling (last resort)
+                self.logger.error(f"Group-level error for compound {compound_id}: {e}")
+                error_group = self._create_group_error(group_df, e)
+                result_groups.append(error_group)
+        
+        return pd.concat(result_groups, ignore_index=True) if result_groups else df.iloc[:0]
+
+    def _process_group(self, group_df: pd.DataFrame) -> pd.DataFrame:
+        """Process a group of rows with the same __id__"""
+        expanded_rows = []
+        
+        for _, row in group_df.iterrows():
+            # Pass through existing errors automatically
+            if has_error(row):
+                expanded_rows.append(pd.DataFrame([row]))
+                continue
+            
+            # Process individual row - this is where developer's code runs
+            try:
+                expanded_result = self._row_expand(row)
+                expanded_rows.append(expanded_result)
+            except Exception as e:
+                # Row-level error handling - create error row
+                self.logger.error(f"Row expansion failed: {e}")
+                error_row = row.copy()
+                error_row['__error__'] = traceback.format_exc()
+                expanded_rows.append(pd.DataFrame([error_row]))
+        
+        # Combine all expanded results for this group
+        combined_result = pd.concat(expanded_rows, ignore_index=True) if expanded_rows else group_df.iloc[:0]
+        
+        # Automatically assign sequential __enum_id__ for the entire group
+        combined_result['__enum_id__'] = range(len(combined_result))
+        
+        return combined_result
+
+    def _create_group_error(self, group_df: pd.DataFrame, error: Exception) -> pd.DataFrame:
+        """Create error entries for entire group when group-level processing fails"""
+        error_group = group_df.copy()
+        error_msg = f"Group processing failed: {traceback.format_exc()}"
+        error_group['__error__'] = error_msg
+        if '__enum_id__' not in error_group.columns:
+            error_group['__enum_id__'] = range(len(error_group))
+        return error_group
+
+    @abstractmethod
+    def _row_expand(self, row: pd.Series) -> pd.DataFrame:
+        """
+        Expand a single row into multiple rows.
+        
+        This is the ONLY method developers need to implement.
+        
+        Args:
+            row: A single pandas Series representing one row
+            
+        Returns:
+            DataFrame with one or more expanded rows
+            
+        Error Handling:
+            - If the entire expansion fails, just let the exception bubble up
+            - For partial failures within the expansion loop, create error rows:
+              
+              try:
+                  # process individual expansion item
+                  new_row = row.copy()
+                  new_row["result"] = some_calculation()
+                  expanded_rows.append(new_row)
+              except Exception as e:
+                  error_row = row.copy()
+                  error_row["__error__"] = f"Expansion failed: {e}"
+                  expanded_rows.append(error_row)
+        
+        Note: 
+            - Input row may be part of a larger enumeration group
+            - Don't worry about __id__ or __enum_id__ management
+            - Focus only on the expansion logic
+        """
+        pass
+
+
+@dataclass
 class Chain(Link):
     """Runs links sequentially, one after the other and return the processed dataframe."""
 

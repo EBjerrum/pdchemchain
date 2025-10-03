@@ -54,6 +54,12 @@ dev = [
     "pytest-cov",
     "jupytext"
 ]
+# These are optionally installabe (and some are "bulky" due to downstream pytorch dependency), 
+# but needed for some contrib links
+contrib = [
+    "molecule_ll",
+    "pysmilesutils @ git+ssh://git@github.com/EBjerrum/pysmilesutils.git"
+]
 
 [project.scripts]
 pdchemchain = "pdchemchain.scripts:pdchemchain"
