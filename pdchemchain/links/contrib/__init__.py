@@ -7,5 +7,6 @@ pip install -e .[contrib]
 
 from .pysmilesutils import NumberOfTokens
 from .molll import MolLL
+from .reinvent import REInventTokenizer
 
-__all__ = ['NumberOfTokens', 'MolLL']
+__all__ = ['NumberOfTokens', 'MolLL', 'REInventTokenizer']
