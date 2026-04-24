@@ -506,3 +506,46 @@ class TanimotoSimilarity(RowLink):
         mol_fp = self.fingerprinter.GetFingerprint(row[self.in_column])
         row[self.out_column]  = Chem.DataStructs.TanimotoSimilarity(mol_fp, self.target_fingerprint) #OBS consider directionality for other sim-metrics if refactored
         return row
+
+
+@dataclass
+class MolToFingerprint(RowLink):
+    """Compute Morgan fingerprint as RDKit ExplicitBitVect
+
+    Generates Morgan (circular) fingerprints from RDKit molecule objects.
+    The fingerprint is stored as an RDKit ExplicitBitVect in a dunder column
+    for consumption by downstream clustering/embedding links.
+
+    Parameters
+    ----------
+    in_column
+        Column containing RDKit molecule objects
+    out_column
+        Column to store the fingerprint objects
+    radius
+        Morgan fingerprint radius (1, 2, or 3)
+    n_bits
+        Length of the bit vector
+    """
+
+    in_column: InColumnName = "ROMol"
+    out_column: str = "__MolFP__"
+    radius: int = 2
+    n_bits: int = 2048
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.radius not in (1, 2, 3):
+            import time
+            self.logger.warning(
+                f"Unusual Morgan radius={self.radius}. "
+                f"Typical values are 1, 2, or 3. Continuing in 10 seconds..."
+            )
+            time.sleep(10)
+        self.fingerprinter = rdFingerprintGenerator.GetMorganGenerator(
+            radius=self.radius, fpSize=self.n_bits
+        )
+
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        row[self.out_column] = self.fingerprinter.GetFingerprint(row[self.in_column])
+        return row

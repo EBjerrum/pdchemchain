@@ -14,7 +14,7 @@ import pandas as pd
 from pdchemchain.errormanager import has_error
 from pdchemchain.io_utilities import load_chain, save_chain
 from pdchemchain.logging import logger, logging, RowLogger
-from pdchemchain.typing import InColumnName
+from pdchemchain.typing import InColumnName, Partitionable
 
 
 @dataclass
@@ -170,7 +170,22 @@ class Link(ABC, SelfConfigurable):
     """Base class for all Links
 
     All links must be @dataclasses and overload the abstract method _apply(self, df: pd.DataFrame) -> pd.DataFrame
+
+    Class Attributes
+    ----------------
+    _partitionable : Partitionable
+        Whether this link produces correct results on partitioned data.
+        Override to Partitionable.NO for links requiring the full dataset
+        (e.g. clustering, deduplication, dimensionality reduction),
+        or Partitionable.MAYBE for links where it depends on configuration
+        (e.g. DfEval with user-supplied expressions).
     """
+
+    _partitionable = Partitionable.YES
+
+    def _non_partitionable_links(self) -> list:
+        """Return names of links that are not fully partitionable (NO or MAYBE). Overridden by Chain/UnionLink for recursion."""
+        return [type(self).__name__] if self._partitionable != Partitionable.YES else []
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         self.logger.info(f"Starting processing of dataframe with {len(df)} rows")
@@ -427,6 +442,18 @@ class Chain(Link):
 
     links: Union[List[Link], Tuple[Link]]
 
+    @property
+    def _partitionable(self):
+        """A chain's partitionability is the minimum of its links (ternary AND)."""
+        return min(link._partitionable for link in self.links)
+
+    def _non_partitionable_links(self) -> list:
+        """Return names of non-partitionable links, recursing into nested chains."""
+        names = []
+        for link in self.links:
+            names.extend(link._non_partitionable_links())
+        return names
+
     def set_log_level(self, level_str: str = "debug"):
         level = logging.getLevelName(level_str.upper())
         logging.basicConfig(level=level)
@@ -468,6 +495,18 @@ class UnionLink(Link):
 
     link1: Link
     link2: Link
+
+    @property
+    def _partitionable(self):
+        """A union's partitionability is the minimum of its links (ternary AND)."""
+        return min(self.link1._partitionable, self.link2._partitionable)
+
+    def _non_partitionable_links(self) -> list:
+        """Return names of non-partitionable links, recursing into nested links."""
+        names = []
+        for link in [self.link1, self.link2]:
+            names.extend(link._non_partitionable_links())
+        return names
 
     def set_log_level(self, level_str: str = "debug"):
         level = logging.getLevelName(level_str.upper())

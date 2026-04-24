@@ -4,11 +4,14 @@ from typing import List, Optional
 import pandas as pd
 
 from pdchemchain.base import Link, RowLink
+from pdchemchain.typing import Partitionable
 
 
 @dataclass
 class DfEval(Link):
     """Flexible application of operations using pandas .eval method"""
+
+    _partitionable = Partitionable.MAYBE
 
     eval_str: str
     out_column: Optional[str] = ""
@@ -46,6 +49,8 @@ class DropColumns(Link):
 @dataclass
 class DropDuplicates(Link):
     """Drops duplicates from dataframe based on values in the columns list"""
+
+    _partitionable = Partitionable.NO
 
     columns: List[str] = field(
         default_factory=list

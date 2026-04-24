@@ -8,5 +8,6 @@ pip install -e .[contrib]
 from .pysmilesutils import NumberOfTokens
 from .molll import MolLL
 from .reinvent import REInventTokenizer
+from .embeddings import UMAPEmbedding, tSNEEmbedding
 
-__all__ = ['NumberOfTokens', 'MolLL', 'REInventTokenizer']
+__all__ = ['NumberOfTokens', 'MolLL', 'REInventTokenizer', 'UMAPEmbedding', 'tSNEEmbedding']

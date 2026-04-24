@@ -58,7 +58,9 @@ dev = [
 # but needed for some contrib links
 contrib = [
     "molecule_ll",
-    "pysmilesutils @ git+ssh://git@github.com/EBjerrum/pysmilesutils.git"
+    "pysmilesutils @ git+ssh://git@github.com/EBjerrum/pysmilesutils.git",
+    "umap-learn",
+    "scikit-learn",
 ]
 
 [project.scripts]

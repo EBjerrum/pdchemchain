@@ -5,6 +5,7 @@ from .error import *
 from .filters import *
 from .hpc import *
 from .io import *
+from .clustering import *
 from .custom import *
 
 # Try to import contrib links - these have external dependencies

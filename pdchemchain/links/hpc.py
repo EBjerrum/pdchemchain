@@ -9,6 +9,7 @@ import pandas as pd
 import psutil
 
 from pdchemchain.base import Link
+from pdchemchain.typing import Partitionable
 
 
 @dataclass(kw_only=True)
@@ -17,12 +18,54 @@ class PartitionProcessorBase(Link):
 
     partition_size: Optional[int] = field(default=None)
     num_partitions: Optional[int] = field(default=None)
+    allow_non_partitionable: bool = False
 
     def __post_init__(self):
         super().__post_init__()
         if (self.partition_size is not None) and (self.num_partitions is not None):
             raise ValueError(
                 "Specify either 'partition_size' or 'num_partitions', not both."
+            )
+        # Check that the wrapped link is partitionable
+        if hasattr(self, 'link') and self.link is not None:
+            self._check_partitionable()
+
+    def _check_partitionable(self):
+        """Check if the wrapped link/chain is safe to partition.
+
+        Uses ternary logic: NO raises, MAYBE warns, YES passes silently.
+        """
+        level = self.link._partitionable
+        if level == Partitionable.YES:
+            return
+
+        bad_links = self.link._non_partitionable_links()
+        move_hint = (
+            "Move them outside the partition processor — either before it "
+            "(to preprocess the full dataset) or after it (to postprocess "
+            "the reassembled result)."
+        )
+
+        if level == Partitionable.NO:
+            msg = (
+                f"The following link(s) are not partitionable: {bad_links}. "
+                f"They require the full dataset to produce correct results "
+                f"(e.g. clustering, deduplication, dimensionality reduction). "
+                f"{move_hint}"
+            )
+            if self.allow_non_partitionable:
+                self.logger.warning(msg)
+            else:
+                raise ValueError(
+                    f"{msg} If you understand the risk, set "
+                    f"allow_non_partitionable=True to override."
+                )
+        else:  # MAYBE
+            self.logger.warning(
+                f"The following link(s) may not be partitionable depending on "
+                f"their configuration: {bad_links}. If they perform cross-row "
+                f"operations (e.g. ranking, aggregation), partitioning will "
+                f"produce incorrect results. {move_hint}"
             )
 
     def _partition(self, dataframe):
