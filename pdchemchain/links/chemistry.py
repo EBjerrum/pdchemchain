@@ -1,7 +1,10 @@
 import copy
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
+import os
+import sys
 
+import numpy as np
 import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import Descriptors, PandasTools, RDConfig, rdFingerprintGenerator
@@ -10,7 +13,7 @@ from rdkit.ML.Descriptors.MoleculeDescriptors import MolecularDescriptorCalculat
 
 from pdchemchain.base import Link, RowLink
 from pdchemchain.errormanager import RDKitErrorContextManager
-from pdchemchain.typing import InColumnName
+from pdchemchain.typing import InColumnName, Partitionable
 
 
 @dataclass
@@ -549,3 +552,318 @@ class MolToFingerprint(RowLink):
     def _row_apply(self, row: pd.Series) -> pd.Series:
         row[self.out_column] = self.fingerprinter.GetFingerprint(row[self.in_column])
         return row
+
+
+@dataclass
+class DockingEfficiency(RowLink):
+    """Size-normalized docking efficiency scores
+
+    Computes three docking efficiency metrics that correct for the
+    heavy-atom-count bias in docking scores (larger molecules tend to
+    score better simply because they make more contacts).
+
+    Metrics produced:
+    - {out_prefix}_sub: score - slope * HA  (removes linear size trend)
+    - {out_prefix}_per_ha: score / HA  (classic ligand efficiency)
+    - {out_prefix}_ratio: score / (slope * HA + intercept)  (ratio to frontier)
+
+    The slope and intercept describe the best-score frontier vs molecule
+    size. Use DockingEfficiencyAnalyzer to fit these from your dataset,
+    or supply known values.
+
+    Parameters
+    ----------
+    score_column
+        Column containing docking scores (more negative = better)
+    ha_column
+        Column containing heavy atom counts
+    slope
+        Frontier regression slope (negative for docking scores)
+    intercept
+        Frontier regression intercept
+    out_prefix
+        Prefix for output column names
+    """
+
+    score_column: InColumnName = "Glide (raw)"
+    ha_column: InColumnName = "HeavyAtomCount"
+    slope: float = -0.264
+    intercept: float = -5.11
+    out_prefix: str = "dock_eff"
+
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        score = float(row[self.score_column])
+        ha = float(row[self.ha_column])
+
+        row[f"{self.out_prefix}_sub"] = score - self.slope * ha
+        row[f"{self.out_prefix}_per_ha"] = score / ha if ha > 0 else float('nan')
+
+        frontier_value = self.slope * ha + self.intercept
+        row[f"{self.out_prefix}_ratio"] = score / frontier_value if frontier_value != 0 else float('nan')
+
+        return row
+
+
+@dataclass
+class DockingEfficiencyAnalyzer(Link):
+    """Fit frontier regression and compute docking efficiency metrics
+
+    Analyzes the relationship between docking scores and heavy atom count
+    by fitting a linear frontier (best score per HA bin). Automatically
+    detects the linear region by sweeping HA cutoffs and selecting the
+    widest range with good R-squared.
+
+    After fitting, access the configured scorer via the .docking_efficiency
+    property, or inspect fitted parameters via sklearn-style trailing-underscore
+    attributes (slope_, intercept_, r_squared_, ha_range_).
+
+    Diagnostic plots require matplotlib (pip install matplotlib).
+
+    Parameters
+    ----------
+    score_column
+        Column containing docking scores (more negative = better)
+    ha_column
+        Column containing heavy atom counts
+    ha_min
+        Minimum HA for frontier fitting
+    ha_max
+        Maximum HA for frontier fitting. None = auto-detect.
+    r_squared_threshold
+        Minimum R-squared for the auto-detected linear region (fallback)
+    max_r2_drop
+        Maximum allowed R-squared drop between consecutive HA cutoffs.
+        The auto-detection picks the last cutoff before R² drops by
+        more than this amount in a single step.
+    min_frontier_points
+        Minimum number of HA bins required for fitting
+    out_prefix
+        Prefix for output efficiency column names
+    plot_dir
+        Directory for saving diagnostic plots. None = no file output.
+    """
+
+    _partitionable = Partitionable.NO
+
+    score_column: InColumnName = "Glide (raw)"
+    ha_column: InColumnName = "HeavyAtomCount"
+    ha_min: int = 10
+    ha_max: Optional[int] = None
+    r_squared_threshold: float = 0.7
+    max_r2_drop: float = 0.05
+    min_frontier_points: int = 5
+    out_prefix: str = "dock_eff"
+    plot_dir: Optional[str] = None
+
+    def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        # Build frontier: best (min) score per HA bin
+        frontier = df.groupby(self.ha_column)[self.score_column].min()
+
+        # Determine HA range
+        if self.ha_max is not None:
+            effective_ha_max = self.ha_max
+        else:
+            effective_ha_max = self._auto_detect_ha_max(frontier)
+
+        # Select frontier points in range
+        frontier_in_range = frontier.loc[
+            (frontier.index >= self.ha_min) & (frontier.index <= effective_ha_max)
+        ]
+
+        if len(frontier_in_range) < self.min_frontier_points:
+            self.logger.warning(
+                f"Only {len(frontier_in_range)} frontier points in HA range "
+                f"[{self.ha_min}, {effective_ha_max}]. "
+                f"Need at least {self.min_frontier_points}. "
+                f"Returning DataFrame without efficiency columns."
+            )
+            return df
+
+        # Fit linear regression on frontier
+        coeffs = np.polyfit(frontier_in_range.index.astype(float),
+                            frontier_in_range.values.astype(float), 1)
+        self.slope_ = float(coeffs[0])
+        self.intercept_ = float(coeffs[1])
+
+        # R-squared
+        y_pred = self.slope_ * frontier_in_range.index + self.intercept_
+        ss_res = np.sum((frontier_in_range.values - y_pred) ** 2)
+        ss_tot = np.sum((frontier_in_range.values - frontier_in_range.values.mean()) ** 2)
+        self.r_squared_ = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+        self.ha_range_ = (int(self.ha_min), int(effective_ha_max))
+
+        # Log results
+        self.logger.info(
+            f"Frontier fit: slope={self.slope_:.4f}, intercept={self.intercept_:.2f}, "
+            f"R²={self.r_squared_:.4f}, HA range={self.ha_range_}"
+        )
+        self.logger.info(
+            f"DockingEfficiency(score_column='{self.score_column}', "
+            f"ha_column='{self.ha_column}', "
+            f"slope={self.slope_:.6f}, intercept={self.intercept_:.6f})"
+        )
+
+        # Compute efficiency columns
+        ha = df[self.ha_column].astype(float)
+        score = df[self.score_column].astype(float)
+        df[f"{self.out_prefix}_sub"] = score - self.slope_ * ha
+        df[f"{self.out_prefix}_per_ha"] = score / ha.replace(0, float('nan'))
+        frontier_values = self.slope_ * ha + self.intercept_
+        df[f"{self.out_prefix}_ratio"] = score / frontier_values.replace(0, float('nan'))
+
+        # Generate plots
+        self._frontier = frontier
+        self._frontier_in_range = frontier_in_range
+        self._generate_plots(df)
+
+        return df
+
+    def _auto_detect_ha_max(self, frontier: pd.Series) -> int:
+        """Find the largest HA cutoff that maintains a good linear fit."""
+        all_ha = frontier.index[frontier.index >= self.ha_min].values
+
+        if len(all_ha) < self.min_frontier_points:
+            self.logger.warning(
+                f"Only {len(all_ha)} HA bins above ha_min={self.ha_min}. Using all."
+            )
+            return int(all_ha[-1]) if len(all_ha) > 0 else self.ha_min
+
+        min_cutoff = int(all_ha[self.min_frontier_points - 1])
+        max_cutoff = int(all_ha[-1])
+
+        r_squared_by_cutoff = {}
+        for cutoff in range(min_cutoff, max_cutoff + 1):
+            pts = frontier.loc[
+                (frontier.index >= self.ha_min) & (frontier.index <= cutoff)
+            ]
+            if len(pts) < 2:
+                continue
+            coeffs = np.polyfit(pts.index.astype(float), pts.values.astype(float), 1)
+            y_pred = coeffs[0] * pts.index + coeffs[1]
+            ss_res = np.sum((pts.values - y_pred) ** 2)
+            ss_tot = np.sum((pts.values - pts.values.mean()) ** 2)
+            r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+            r_squared_by_cutoff[cutoff] = r2
+
+        self._r_squared_by_cutoff = r_squared_by_cutoff
+
+        # Walk cutoffs in order, stop before a step drops R² by more than max_r2_drop
+        cutoffs_sorted = sorted(r_squared_by_cutoff.keys())
+        best = cutoffs_sorted[0]
+        for i in range(1, len(cutoffs_sorted)):
+            prev_r2 = r_squared_by_cutoff[cutoffs_sorted[i - 1]]
+            curr_r2 = r_squared_by_cutoff[cutoffs_sorted[i]]
+            if prev_r2 - curr_r2 > self.max_r2_drop:
+                break
+            best = cutoffs_sorted[i]
+
+        # Check if the selected range has acceptable R²
+        best_r2 = r_squared_by_cutoff[best]
+        if best_r2 >= self.r_squared_threshold:
+            self.logger.info(
+                f"Auto-detected ha_max={best} (R²={best_r2:.4f})"
+            )
+        else:
+            self.logger.warning(
+                f"Best ha_max={best} has R²={best_r2:.4f} "
+                f"(below threshold {self.r_squared_threshold}). "
+                f"Consider adjusting ha_min or inspecting the score-vs-HA scatter."
+        )
+        return best
+
+    def _generate_plots(self, df: pd.DataFrame):
+        """Generate diagnostic plots. Requires matplotlib."""
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except ImportError:
+            self.logger.warning(
+                "matplotlib not installed — skipping plots. "
+                "Install with: pip install matplotlib"
+            )
+            self._last_figure = None
+            return
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        # Panel 1: Score vs HA with frontier
+        ax = axes[0]
+        ax.scatter(df[self.ha_column], df[self.score_column],
+                   alpha=0.2, s=8, color='steelblue', label='All molecules')
+        ax.scatter(self._frontier.index, self._frontier.values,
+                   color='orange', s=25, zorder=5, label='Best per HA')
+        ax.scatter(self._frontier_in_range.index, self._frontier_in_range.values,
+                   color='red', s=35, zorder=6, label='Fitted range')
+
+        ha_line = np.array([self._frontier_in_range.index.min(),
+                            self._frontier_in_range.index.max()])
+        ax.plot(ha_line, self.slope_ * ha_line + self.intercept_,
+                'r-', linewidth=2,
+                label=f'fit: {self.slope_:.3f}*HA + {self.intercept_:.2f}')
+
+        ax.set_xlabel('Heavy Atom Count')
+        ax.set_ylabel(self.score_column)
+        ax.set_title(f'Docking Score vs HA (R²={self.r_squared_:.3f})')
+        ax.legend(fontsize=8)
+
+        # Panel 2: R² vs HA cutoff
+        ax = axes[1]
+        if hasattr(self, '_r_squared_by_cutoff') and self._r_squared_by_cutoff:
+            cutoffs = sorted(self._r_squared_by_cutoff.keys())
+            r2_values = [self._r_squared_by_cutoff[c] for c in cutoffs]
+            ax.plot(cutoffs, r2_values, 'o-', markersize=4, color='steelblue')
+            ax.axhline(y=self.r_squared_threshold, color='red', linestyle='--',
+                       alpha=0.7, label=f'threshold={self.r_squared_threshold}')
+            ax.axvline(x=self.ha_range_[1], color='green', linestyle='--',
+                       alpha=0.7, label=f'selected max_HA={self.ha_range_[1]}')
+            ax.set_xlabel('HA cutoff (max)')
+            ax.set_ylabel('R²')
+            ax.set_title('Linear Fit Quality vs HA Range')
+            ax.legend(fontsize=8)
+        else:
+            ax.text(0.5, 0.5, f'HA max={self.ha_max} specified\n(no auto-detection)',
+                    ha='center', va='center', transform=ax.transAxes, fontsize=12)
+            ax.set_title('Segment Selection (skipped)')
+
+        plt.tight_layout()
+
+        if self.plot_dir:
+            os.makedirs(self.plot_dir, exist_ok=True)
+            filepath = os.path.join(self.plot_dir, 'docking_efficiency_diagnostic.png')
+            fig.savefig(filepath, dpi=150, bbox_inches='tight')
+            self.logger.info(f"Diagnostic plot saved to {filepath}")
+
+        self._last_figure = fig
+        plt.close(fig)
+
+    def _repr_png_(self):
+        """Jupyter rich display: show the last diagnostic plot inline."""
+        if not hasattr(self, '_last_figure') or self._last_figure is None:
+            return None
+        import io
+        buf = io.BytesIO()
+        self._last_figure.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        return buf.read()
+
+    @property
+    def docking_efficiency(self) -> DockingEfficiency:
+        """Return a configured DockingEfficiency link with fitted parameters.
+
+        Raises AttributeError if the analyzer has not been applied yet.
+        """
+        if not hasattr(self, 'slope_'):
+            raise AttributeError(
+                "DockingEfficiencyAnalyzer has not been fitted yet. "
+                "Call .apply(df) first."
+            )
+        return DockingEfficiency(
+            score_column=self.score_column,
+            ha_column=self.ha_column,
+            slope=self.slope_,
+            intercept=self.intercept_,
+            out_prefix=self.out_prefix,
+        )
