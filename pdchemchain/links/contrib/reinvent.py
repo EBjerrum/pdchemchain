@@ -82,24 +82,52 @@ class REInventTokenizer(RowLink):
     return_type
         The format for token output: "count" (int), "list" (list of tokens), or "set" (set of unique tokens).
         Defaults to "count".
+    n_augmentations
+        Number of augmented (non-canonical) SMILES to generate per molecule for data augmentation.
+        Only used with return_type="set". Default is 0 (no augmentation).
+        When n_augmentations > 0, tokens from all augmented SMILES are merged into a single set.
 
     Raises
     ------
     ImportError
         Raised if REINVENT is not installed, installation instructions are provided.
     ValueError
-        Raised if return_type is not one of the valid TokenReturnType values.
+        Raised if return_type is not one of the valid TokenReturnType values, or if
+        n_augmentations is used with return_type other than "set".
     """
 
     in_column: InColumnName = "Smiles"
     out_column: str = "Tokens"
     return_type: str = TokenReturnType.COUNT.value
+    n_augmentations: int = 0
 
     def __post_init__(self):
         super().__post_init__()
         self.tokenizer = self._import_dependency()
+        self._validate_augmentation_config()
 
     def _import_dependency(self):
+        import sys
+
+        # FIXME: This patch can be removed once REINVENT4 upgrades mmpdblib to >=3.0
+        # In older versions of mmpdblib (<3.0), sys.stdout.buffer is accessed directly,
+        # which fails in interactive environments like Jupyter/IPython where sys.stdout
+        # is an OutStream without a buffer attribute. Newer versions use getattr with
+        # a fallback. See: https://github.com/rdkit/mmpdb/issues
+        if not hasattr(sys.stdout, 'buffer'):
+            class BufferProxy:
+                """Proxy for sys.stdout.buffer in interactive environments"""
+                def __init__(self, stream):
+                    self.stream = stream
+
+                def write(self, b):
+                    if isinstance(b, bytes):
+                        self.stream.write(b.decode('utf-8', errors='replace'))
+                    else:
+                        self.stream.write(b)
+
+            sys.stdout.buffer = BufferProxy(sys.stdout)
+
         try:
             from reinvent.models.reinvent.models.vocabulary import SMILESTokenizer
 
@@ -118,10 +146,21 @@ class REInventTokenizer(RowLink):
                 f"Must be one of: {', '.join(sorted(valid_types))}"
             )
 
+    def _validate_augmentation_config(self):
+        """Validate that augmentation is only used with return_type='set'"""
+        if self.n_augmentations > 0 and self.return_type != TokenReturnType.SET.value:
+            raise ValueError(
+                f"n_augmentations ({self.n_augmentations}) can only be used with "
+                f"return_type='set', but got return_type='{self.return_type}'"
+            )
+
     def __setattr__(self, name, value):
         if name == "return_type":
             self._validate_return_type_value(value)
         super().__setattr__(name, value)
+        # Re-validate augmentation config after any attribute change
+        if name in ("return_type", "n_augmentations") and hasattr(self, "return_type"):
+            self._validate_augmentation_config()
 
     def _row_apply(self, row: pd.Series) -> pd.Series:
         """Extracts tokens from SMILES string in the specified format"""
@@ -134,6 +173,25 @@ class REInventTokenizer(RowLink):
             case TokenReturnType.LIST.value:
                 row[self.out_column] = tokens
             case TokenReturnType.SET.value:
-                row[self.out_column] = set(tokens)
+                token_set = set(tokens)
+                # Add augmented SMILES if requested
+                if self.n_augmentations:
+                    token_set = self._augment_token_set(smiles, token_set)
+                row[self.out_column] = token_set
 
         return row
+
+    def _augment_token_set(self, smiles: str, token_set: set) -> set:
+        """Generate augmented SMILES and merge their tokens into the set"""
+        from reinvent.chemistry.conversions import randomize_smiles
+
+        for _ in range(self.n_augmentations):
+            try:
+                aug_smiles = randomize_smiles(smiles, isomericSmiles=True)
+                aug_tokens = self.tokenizer.tokenize(aug_smiles, with_begin_and_end=False)
+                token_set.update(aug_tokens)
+            except Exception:
+                # Skip augmentation if randomization fails (e.g., invalid SMILES)
+                pass
+
+        return token_set
