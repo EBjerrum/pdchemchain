@@ -8,6 +8,7 @@ User config file: ~/.pdchemchain/config.yaml
 
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -91,3 +92,31 @@ def get_tool_path(tool_name: str, explicit_path: str = None) -> str:
 def get_schrodinger_path(explicit_path: str = None) -> str:
     """Convenience wrapper for Schrodinger path discovery."""
     return get_tool_path("schrodinger", explicit_path)
+
+
+def ensure_schrodinger_job_server(schrodinger_path: str = None) -> None:
+    """Ensure a local Schrodinger job server is running, starting one if needed.
+
+    Parameters
+    ----------
+    schrodinger_path : str, optional
+        Explicit Schrodinger installation path. If None, discovered via config.
+    """
+    schrodinger = get_schrodinger_path(schrodinger_path)
+    jsc = str(Path(schrodinger) / "jsc")
+
+    result = subprocess.run(
+        [jsc, "local-server-status"], capture_output=True, text=True
+    )
+    if result.returncode == 0 and "RUNNING" in result.stdout:
+        logger.debug("Schrodinger job server already running")
+        return
+
+    logger.info("Starting local Schrodinger job server...")
+    start_result = subprocess.run(
+        [jsc, "local-server-start"], capture_output=True, text=True
+    )
+    if start_result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to start Schrodinger job server: {start_result.stderr}"
+        )

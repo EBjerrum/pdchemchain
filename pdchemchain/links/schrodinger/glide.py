@@ -12,7 +12,7 @@ import pandas as pd
 from rdkit import Chem
 
 from pdchemchain.base import Link
-from pdchemchain.config import get_schrodinger_path
+from pdchemchain.config import ensure_schrodinger_job_server, get_schrodinger_path
 from pdchemchain.errormanager import has_error
 from pdchemchain.typing import InColumnName, Partitionable
 
@@ -278,6 +278,7 @@ class GlideDock(Link):
             raise ValueError("grid_file is required — provide the path to a Glide grid file (.zip)")
 
     def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        ensure_schrodinger_job_server(self.schrodinger_path)
         df_input = df.copy()
         self.logger.info(f"GlideDock: docking {len(df_input)} molecules")
 

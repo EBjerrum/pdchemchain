@@ -8,7 +8,7 @@ from unittest import mock
 import pytest
 import yaml
 
-from pdchemchain.config import get_tool_path, get_schrodinger_path
+from pdchemchain.config import get_tool_path, get_schrodinger_path, ensure_schrodinger_job_server
 
 
 class TestGetToolPath:
@@ -63,3 +63,34 @@ class TestGetSchrodingerPath:
     def test_returns_path(self):
         result = get_schrodinger_path(explicit_path="/test/path")
         assert result == "/test/path"
+
+
+class TestEnsureSchrodingerJobServer:
+    """Test job server auto-start logic."""
+
+    def test_already_running(self):
+        """No-op when server is already running."""
+        with mock.patch("pdchemchain.config.subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(
+                returncode=0, stdout="Status of jobserverd: RUNNING\nJob server available at localhost:36231"
+            )
+            ensure_schrodinger_job_server(schrodinger_path="/test/schrodinger")
+            mock_run.assert_called_once()
+            assert "local-server-status" in mock_run.call_args[0][0]
+
+    def test_starts_when_not_running(self):
+        """Starts server when status check shows not running."""
+        status_result = mock.Mock(returncode=1, stdout="", stderr="")
+        start_result = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("pdchemchain.config.subprocess.run", side_effect=[status_result, start_result]) as mock_run:
+            ensure_schrodinger_job_server(schrodinger_path="/test/schrodinger")
+            assert mock_run.call_count == 2
+            assert "local-server-start" in mock_run.call_args_list[1][0][0]
+
+    def test_raises_on_start_failure(self):
+        """Raises RuntimeError when server fails to start."""
+        status_result = mock.Mock(returncode=1, stdout="", stderr="")
+        start_result = mock.Mock(returncode=1, stdout="", stderr="bind: address already in use")
+        with mock.patch("pdchemchain.config.subprocess.run", side_effect=[status_result, start_result]):
+            with pytest.raises(RuntimeError, match="Failed to start"):
+                ensure_schrodinger_job_server(schrodinger_path="/test/schrodinger")
