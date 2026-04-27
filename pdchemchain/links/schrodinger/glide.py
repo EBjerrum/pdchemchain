@@ -75,40 +75,41 @@ def _generate_in_file(
     # Collect all keys to remove: managed + overrides
     keys_to_remove = _MANAGED_KEYS | set(overrides.keys())
 
-    # Filter out lines whose key matches
-    filtered_lines = []
+    # Split into top-level key-value lines and block sections.
+    # Glide requires all top-level keys BEFORE any [SECTION] blocks.
+    top_lines = []
+    block_lines = []
     in_block = False
     for line in user_lines:
         stripped = line.strip()
-        # Handle block sections like [CONSTRAINT_GROUP:1] — always keep
         if stripped.startswith("["):
             in_block = True
-            filtered_lines.append(line)
+            block_lines.append(line)
             continue
         if in_block:
             # Block content lines are indented; unindented line ends block
             if stripped and not line[0].isspace():
                 in_block = False
             else:
-                filtered_lines.append(line)
+                block_lines.append(line)
                 continue
 
         # Normal key-value line
         key = stripped.split()[0] if stripped else ""
         if key not in keys_to_remove:
-            filtered_lines.append(line)
+            top_lines.append(line)
 
-    # Append managed keys
-    filtered_lines.append(f"GRIDFILE  {grid_file}\n")
-    filtered_lines.append(f"POSES_PER_LIG  {poses_per_lig}\n")
-    filtered_lines.append(f"POSE_OUTTYPE  ligandlib_sd\n")
-    filtered_lines.append(f"LIGANDFILE  {ligand_file}\n")
+    # Insert managed keys in top section
+    top_lines.append(f"GRIDFILE  {grid_file}\n")
+    top_lines.append(f"POSES_PER_LIG  {poses_per_lig}\n")
+    top_lines.append(f"POSE_OUTTYPE  ligandlib_sd\n")
+    top_lines.append(f"LIGANDFILE  {ligand_file}\n")
 
-    # Append user overrides
+    # Insert user overrides in top section
     for k, v in overrides.items():
-        filtered_lines.append(f"{k}  {v}\n")
+        top_lines.append(f"{k}  {v}\n")
 
-    return "".join(filtered_lines)
+    return "".join(top_lines + block_lines)
 
 
 def _write_ligands_sdf(

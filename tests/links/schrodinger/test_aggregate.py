@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pdchemchain.links.schrodinger.aggregate import AggregateByScore
+from pdchemchain.links.schrodinger import AggregateByScore
 from tests.basetest import BaseTest
 
 

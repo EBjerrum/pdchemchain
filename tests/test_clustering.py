@@ -6,6 +6,7 @@ from rdkit.DataStructs import ExplicitBitVect
 
 from pdchemchain.links.chemistry import MolToFingerprint
 from pdchemchain.links.clustering import ButinaClustering
+from pdchemchain.links.dataframe import GroupPick
 from pdchemchain.links.contrib.embeddings import UMAPEmbedding, tSNEEmbedding
 from tests.basetest import BaseTest
 
@@ -158,3 +159,178 @@ class TesttSNEEmbedding(BaseTest):
         link = tSNEEmbedding(perplexity=100.0)
         result = link(fp_dataframe)
         assert "tSNE_dim1" in result.columns
+
+
+# --- GroupPick tests ---
+
+
+class TestGroupPickTag:
+    """Test tag mode: marks best row per group, keeps all rows."""
+
+    @pytest.fixture
+    def clustered_df(self):
+        return pd.DataFrame({
+            "ButinaCluster": [0, 0, 0, 1, 1, -1],
+            "docking_score": [-8.5, -6.0, -7.2, -9.0, -5.5, -4.0],
+            "Smiles": ["A", "B", "C", "D", "E", "F"],
+        })
+
+    def test_tags_best_min(self, clustered_df):
+        link = GroupPick(mode="min")
+        result = link(clustered_df)
+        assert len(result) == 6  # all rows preserved
+        assert "picked" in result.columns
+        # Cluster 0: best is -8.5 (row 0)
+        assert result.loc[0, "picked"] == True
+        assert result.loc[1, "picked"] == False
+        # Cluster 1: best is -9.0 (row 3)
+        assert result.loc[3, "picked"] == True
+
+    def test_tags_best_max(self, clustered_df):
+        link = GroupPick(mode="max")
+        result = link(clustered_df)
+        # Cluster 0: max is -6.0 (row 1)
+        assert result.loc[1, "picked"] == True
+        assert result.loc[0, "picked"] == False
+
+    def test_skips_noise_by_default(self, clustered_df):
+        link = GroupPick(mode="min")
+        result = link(clustered_df)
+        # Noise cluster (-1) should not be picked
+        assert result.loc[5, "picked"] == False
+
+    def test_pick_noise_when_enabled(self, clustered_df):
+        link = GroupPick(mode="min", pick_noise=True)
+        result = link(clustered_df)
+        assert result.loc[5, "picked"] == True
+
+    def test_custom_out_column(self, clustered_df):
+        link = GroupPick(out_column="selected")
+        result = link(clustered_df)
+        assert "selected" in result.columns
+        assert "picked" not in result.columns
+
+
+class TestGroupPickTagFilter:
+    """Test tag mode with filter_column."""
+
+    def test_filter_restricts_candidates(self):
+        df = pd.DataFrame({
+            "ButinaCluster": [0, 0, 0],
+            "docking_score": [-9.0, -7.0, -5.0],
+            "eligible": [False, True, True],
+        })
+        link = GroupPick(filter_column="eligible")
+        result = link(df)
+        # Best eligible is -7.0 (row 1), not -9.0 (row 0, ineligible)
+        assert result.loc[0, "picked"] == False
+        assert result.loc[1, "picked"] == True
+        assert result.loc[2, "picked"] == False
+
+    def test_no_eligible_rows(self):
+        df = pd.DataFrame({
+            "ButinaCluster": [0, 0],
+            "docking_score": [-9.0, -7.0],
+            "eligible": [False, False],
+        })
+        link = GroupPick(filter_column="eligible")
+        result = link(df)
+        assert not result["picked"].any()
+
+
+class TestGroupPickCollapse:
+    """Test collapse mode: drops non-best rows."""
+
+    def test_collapses_to_one_per_group(self):
+        df = pd.DataFrame({
+            "__id__": [0, 0, 1, 1],
+            "docking_score": [-8.5, -6.0, -7.0, -9.0],
+            "variant": ["a", "b", "c", "d"],
+        })
+        link = GroupPick(group_by="__id__", action="collapse")
+        result = link(df)
+        assert len(result) == 2
+        row0 = result[result["__id__"] == 0].iloc[0]
+        assert row0["docking_score"] == -8.5
+        row1 = result[result["__id__"] == 1].iloc[0]
+        assert row1["docking_score"] == -9.0
+
+    def test_error_only_group_preserved(self):
+        df = pd.DataFrame({
+            "__id__": [0, 0, 1],
+            "docking_score": [-8.5, -6.0, np.nan],
+            "__error__": [None, None, "LigPrep: failed"],
+        })
+        link = GroupPick(group_by="__id__", action="collapse")
+        result = link(df)
+        assert len(result) == 2
+        error_row = result[result["__id__"] == 1].iloc[0]
+        assert error_row["__error__"] == "LigPrep: failed"
+
+    def test_drop_group_columns(self):
+        df = pd.DataFrame({
+            "__id__": [0, 1],
+            "__enum_id__": [0, 1],
+            "docking_score": [-8.5, -6.0],
+        })
+        link = GroupPick(group_by="__id__", action="collapse", drop_group_columns=True)
+        result = link(df)
+        assert "__id__" not in result.columns
+        assert "__enum_id__" not in result.columns
+
+
+class TestGroupPickNaN:
+    """Test handling of all-NaN score groups."""
+
+    def test_collapse_all_nan_group_gets_error(self):
+        """Groups where all scores are NaN should get first row with __error__."""
+        df = pd.DataFrame({
+            "__id__": [0, 0, 1, 1],
+            "docking_score": [np.nan, np.nan, -8.5, -6.0],
+            "Smiles": ["A", "B", "C", "D"],
+        })
+        link = GroupPick(group_by="__id__", action="collapse")
+        result = link(df)
+        assert len(result) == 2
+        # Group 0: all NaN, should have error
+        row0 = result[result["__id__"] == 0].iloc[0]
+        assert "no valid" in row0["__error__"]
+        assert row0["Smiles"] == "A"  # first row selected
+        # Group 1: valid, best score
+        row1 = result[result["__id__"] == 1].iloc[0]
+        assert row1["docking_score"] == -8.5
+
+    def test_collapse_all_groups_nan(self):
+        """All groups NaN — every group gets an error row."""
+        df = pd.DataFrame({
+            "__id__": [0, 1],
+            "docking_score": [np.nan, np.nan],
+        })
+        link = GroupPick(group_by="__id__", action="collapse")
+        result = link(df)
+        assert len(result) == 2
+        assert result["__error__"].notna().all()
+
+    def test_tag_nan_group_not_picked(self):
+        """In tag mode, all-NaN groups get no pick."""
+        df = pd.DataFrame({
+            "ButinaCluster": [0, 0, 1],
+            "docking_score": [np.nan, np.nan, -8.0],
+        })
+        link = GroupPick()
+        result = link(df)
+        assert result.loc[0, "picked"] == False
+        assert result.loc[1, "picked"] == False
+        assert result.loc[2, "picked"] == True
+
+
+class TestGroupPickValidation:
+    """Test parameter validation."""
+
+    def test_invalid_mode(self):
+        with pytest.raises(ValueError, match="mode must be"):
+            GroupPick(mode="average")
+
+    def test_invalid_action(self):
+        with pytest.raises(ValueError, match="action must be"):
+            GroupPick(action="filter")
