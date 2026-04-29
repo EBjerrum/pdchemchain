@@ -1,0 +1,141 @@
+# ============================================================================
+# REINVENT Staged Learning with pdchemchain Scoring
+# ============================================================================
+#
+# Runs reinforcement learning using a pdchemchain pipeline for scoring.
+# The PdChemChain component loads scoring_pipeline.yaml (built interactively
+# in 02_build_scoring_pipeline.py) and extracts multiple property columns as
+# separate scoring endpoints -- all from a single chain execution.
+#
+# Optimisation targets:
+#   - NumHDonors < 1       (the "smoking gun" -- force zero HBD, weight 0.6)
+#   - MolLogP in [1, 4]   (lipophilicity sweet spot, weight 0.2)
+#   - TPSA in [40, 120]   (oral bioavailability range, weight 0.2)
+#   - No unwanted substructures (filter)
+#
+# Usage:
+#   reinvent 03_staged_learning.toml
+#
+# Output:
+#   staged_learning.csv  -- per-step summary with scores
+#   stage1.chkpt         -- trained agent checkpoint
+
+run_type = "staged_learning"
+tb_logdir = "tb_logs"
+json_out_config = "_staged_learning.json"
+
+[parameters]
+# Prior (fixed reference) and agent (gets updated via RL)
+# Both start from the same untrained prior.
+# Adjust path to your REINVENT installation, e.g. <reinvent_repo>/priors/reinvent.prior
+prior_file = "priors/reinvent.prior"
+agent_file = "priors/reinvent.prior"
+
+summary_csv_prefix = "staged_learning"
+batch_size = 128
+unique_sequences = true
+randomize_smiles = true
+
+# DAP (Differentiable Augmented Prior) reward strategy
+[learning_strategy]
+type = "dap"
+sigma = 128
+rate = 0.0001
+
+# Penalise repeated scaffolds to encourage diversity
+[diversity_filter]
+type = "IdenticalMurckoScaffold"
+bucket_size = 25
+minscore = 0.4
+penalty_multiplier = 0.5
+
+# ========================
+# Stage 1 -- Property optimisation
+# ========================
+[[stage]]
+chkpt_file = "stage1.chkpt"
+max_score = 0.7
+min_steps = 50
+max_steps = 300
+
+[stage.scoring]
+type = "geometric_mean"
+
+# ---------- Filter: reject unwanted substructures ----------
+# This is a standard REINVENT filter component, not part of the pdchemchain
+# pipeline. Filters are applied globally before scoring.
+[[stage.scoring.component]]
+[stage.scoring.component.custom_alerts]
+[[stage.scoring.component.custom_alerts.endpoint]]
+name = "Unwanted SMARTS"
+params.smarts = [
+    "[*;r8]",          # 8-membered rings
+    "[*;r9]",          # 9-membered rings
+    "[#8][#8]",        # peroxides
+    "[#16][#16]",      # disulfides
+    "[#7;!n][#7;!n]",  # hydrazines (not in aromatic ring)
+]
+
+# ---------- PdChemChain: drug-likeness properties ----------
+# All three endpoints below share a SINGLE chain execution.
+# The chain (scoring_pipeline.yaml) runs once per batch; each endpoint
+# just picks a different column from the result DataFrame.
+[[stage.scoring.component]]
+[stage.scoring.component.PdChemChain]
+
+# Endpoint 1: NumHDonors -- the "smoking gun"
+# The prior generates ~60% molecules with 1+ HBD.  After RL, the agent
+# should strongly shift toward 0 HBD -- an easy-to-verify effect.
+# reverse_sigmoid: score ~1 when NumHDonors < 0.5, drops to ~0 above 1.
+# smiles_column: name of the DataFrame column fed into the chain.
+# Default is "SMILES" (matching REINVENT output), shown here for illustration.
+# Change to e.g. "Smiles" if your chain expects a different column name.
+[[stage.scoring.component.PdChemChain.endpoint]]
+name = "No HBD"
+weight = 0.6
+params.config_file = "scoring_pipeline.yaml"
+params.score_column = "NumHDonors"
+params.smiles_column = "SMILES"
+
+transform.type = "reverse_sigmoid"
+transform.high = 1.0
+transform.low = 0.0
+transform.k = 0.4
+
+# Endpoint 2: MolLogP (target range 1-4 for oral drugs)
+[[stage.scoring.component.PdChemChain.endpoint]]
+name = "LogP"
+weight = 0.2
+params.config_file = "scoring_pipeline.yaml"
+params.score_column = "MolLogP"
+
+transform.type = "double_sigmoid"
+transform.high = 4.0
+transform.low = 1.0
+transform.coef_div = 100.0
+transform.coef_si = 10.0
+transform.coef_se = 10.0
+
+# Endpoint 3: TPSA (target range 40-120 for oral bioavailability)
+[[stage.scoring.component.PdChemChain.endpoint]]
+name = "TPSA"
+weight = 0.2
+params.config_file = "scoring_pipeline.yaml"
+params.score_column = "TPSA"
+
+transform.type = "double_sigmoid"
+transform.high = 120.0
+transform.low = 40.0
+transform.coef_div = 100.0
+transform.coef_si = 10.0
+transform.coef_se = 10.0
+
+# ---------- Monitor-only endpoint (weight = 0) ----------
+# weight = 0 means this endpoint is computed and logged to TensorBoard/CSV
+# but does NOT contribute to the total score.  Useful for tracking properties
+# that the chain already computes anyway (no extra cost -- same chain run).
+[[stage.scoring.component.PdChemChain.endpoint]]
+name = "HBA (monitor)"
+weight = 0
+params.config_file = "scoring_pipeline.yaml"
+params.score_column = "NumHAcceptors"

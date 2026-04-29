@@ -162,6 +162,7 @@ cython_debug/
 *_nogit.*
 
 notebooks
+documentation/reinvent/
 pdchemchain.code-workspace
 pdchemchain/_version.py
 pdchemchain/templates.py

@@ -67,7 +67,8 @@ contrib = [
 pdchemchain = "pdchemchain.scripts:pdchemchain"
 
 [tool.setuptools.packages.find]
-exclude = ["tests/*", "notebooks/*"]
+include = ["pdchemchain*", "reinvent_plugins*"]
+namespaces = true
 
 
 [tool.pytest.ini_options]

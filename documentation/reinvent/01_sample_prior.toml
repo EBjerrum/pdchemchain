@@ -1,0 +1,33 @@
+# ============================================================================
+# REINVENT Prior Sampling Configuration
+# ============================================================================
+#
+# Generates a batch of SMILES from the REINVENT prior (untrained generative
+# model).  Use this to create a representative sample for interactively
+# building and testing a pdchemchain scoring pipeline before running RL.
+#
+# Usage:
+#   reinvent 01_sample_prior.toml
+#
+# Output:
+#   prior_sample.csv  -- CSV with columns: SMILES, SMILES_state, NLL
+
+run_type = "sampling"
+
+[parameters]
+# Path to the REINVENT prior model -- adjust to your installation.
+# The prior ships with REINVENT, typically at <reinvent_repo>/priors/reinvent.prior
+model_file = "priors/reinvent.prior"
+
+# Output file for sampled SMILES
+output_file = "prior_sample.csv"
+
+# Number of SMILES to sample.  1000 is enough for interactive pipeline
+# testing; increase if you need broader chemical space coverage.
+num_smiles = 1000
+
+# De-duplicate and canonicalise SMILES
+unique_molecules = true
+
+# Shuffle atom order in SMILES to add diversity
+randomize_smiles = true
