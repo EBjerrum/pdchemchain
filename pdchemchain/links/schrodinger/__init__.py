@@ -12,6 +12,7 @@ from pdchemchain.typing import InColumnName
 
 from .glide import GlideDock
 from .ligprep import LigPrep
+from .mmgbsa import PrimeMMGBSA
 
 
 @dataclass
@@ -29,4 +30,4 @@ class AggregateByScore(GroupPick):
     action: str = "collapse"
 
 
-__all__ = ["LigPrep", "GlideDock", "AggregateByScore"]
+__all__ = ["LigPrep", "GlideDock", "AggregateByScore", "PrimeMMGBSA"]

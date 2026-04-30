@@ -9,6 +9,7 @@ User config file: ~/.pdchemchain/config.yaml
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import yaml
@@ -105,6 +106,12 @@ def ensure_schrodinger_job_server(schrodinger_path: str = None) -> None:
     schrodinger = get_schrodinger_path(schrodinger_path)
     jsc = str(Path(schrodinger) / "jsc")
 
+    if not Path(jsc).exists():
+        raise RuntimeError(
+            f"Schrodinger jsc not found at {jsc}. "
+            f"Check your SCHRODINGER path ({schrodinger})."
+        )
+
     result = subprocess.run(
         [jsc, "local-server-status"], capture_output=True, text=True
     )
@@ -120,3 +127,18 @@ def ensure_schrodinger_job_server(schrodinger_path: str = None) -> None:
         raise RuntimeError(
             f"Failed to start Schrodinger job server: {start_result.stderr}"
         )
+
+    # Poll until server is actually ready (start returns before it accepts jobs)
+    for _ in range(10):
+        time.sleep(1)
+        check = subprocess.run(
+            [jsc, "local-server-status"], capture_output=True, text=True
+        )
+        if check.returncode == 0 and "RUNNING" in check.stdout:
+            logger.info("Schrodinger job server started successfully")
+            return
+
+    raise RuntimeError(
+        "Schrodinger job server did not become ready within 10 seconds. "
+        "Try running '$SCHRODINGER/jsc local-server-start' manually."
+    )
