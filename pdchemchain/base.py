@@ -140,7 +140,7 @@ class SelfConfigurable:
             elif isinstance(value, (list, tuple)):  # for evt. Links in a list
                 recursive_list = []
                 for item in value:
-                    if "__class__" in item:
+                    if isinstance(item, dict) and "__class__" in item:
                         recursive_list.append(Link.from_params(item))
                     else:
                         recursive_list.append(item)

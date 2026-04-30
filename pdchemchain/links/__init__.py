@@ -1,4 +1,5 @@
 from ..base import *
+from .aggregators import *
 from .chemistry import *
 from .dataframe import *
 from .error import *
@@ -7,6 +8,7 @@ from .hpc import *
 from .io import *
 from .clustering import *
 from .custom import *
+from .transforms import *
 
 # Try to import contrib links - these have external dependencies
 try:
