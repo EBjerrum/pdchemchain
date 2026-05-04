@@ -5,7 +5,7 @@ from rdkit import Chem
 from rdkit.DataStructs import ExplicitBitVect
 
 from pdchemchain.links.chemistry import MolToFingerprint
-from pdchemchain.links.clustering import ButinaClustering
+from pdchemchain.links.clustering import ButinaClustering, CommonBitFilter
 from pdchemchain.links.dataframe import GroupPick
 from pdchemchain.links.contrib.embeddings import UMAPEmbedding, tSNEEmbedding
 from tests.basetest import BaseTest
@@ -66,6 +66,62 @@ class TestMolToFingerprint(BaseTest):
         r2 = MolToFingerprint(radius=2)(sample_dataframe)["__MolFP__"].iloc[0]
         # Radius 2 should have at least as many bits on as radius 1
         assert r2.GetNumOnBits() >= r1.GetNumOnBits()
+
+
+class TestCommonBitFilter(BaseTest):
+    _Link = CommonBitFilter
+    _classparams = {"threshold": 1.0}
+    _alt_classparams = {"threshold": 0.5}
+
+    @pytest.fixture
+    def sample_dataframe(self, fp_dataframe):
+        return fp_dataframe
+
+    def test_fp_size_preserved(self, fp_dataframe):
+        original_nbits = fp_dataframe["__MolFP__"].iloc[0].GetNumBits()
+        result = CommonBitFilter()(fp_dataframe)
+        assert result["__MolFP__"].iloc[0].GetNumBits() == original_nbits
+
+    def test_bits_removed_at_100_percent(self, fp_dataframe):
+        """Bits set in ALL molecules should be zeroed at threshold=1.0."""
+        fps = fp_dataframe["__MolFP__"].tolist()
+        # Find bits set in all molecules via AND
+        common = ExplicitBitVect(fps[0].GetNumBits())
+        common |= fps[0]
+        for fp in fps[1:]:
+            common &= fp
+        common_bits = set(common.GetOnBits())
+
+        result = CommonBitFilter(threshold=1.0)(fp_dataframe)
+        for fp in result["__MolFP__"]:
+            # None of the universally-common bits should remain
+            assert not common_bits.intersection(fp.GetOnBits())
+
+    def test_threshold_partial(self, fp_dataframe):
+        """Lower threshold should remove more bits than 1.0."""
+        r100 = CommonBitFilter(threshold=1.0)(fp_dataframe)
+        r50 = CommonBitFilter(threshold=0.5)(fp_dataframe)
+        mean_on_100 = np.mean([fp.GetNumOnBits() for fp in r100["__MolFP__"]])
+        mean_on_50 = np.mean([fp.GetNumOnBits() for fp in r50["__MolFP__"]])
+        assert mean_on_50 <= mean_on_100
+
+    def test_no_common_bits(self):
+        """Diverse FPs with no universally-set bits should be unchanged."""
+        n_bits = 64
+        fps = []
+        for i in range(5):
+            fp = ExplicitBitVect(n_bits)
+            fp.SetBit(i)  # each FP has a unique bit
+            fps.append(fp)
+        df = pd.DataFrame({"__MolFP__": fps})
+        result = CommonBitFilter(threshold=1.0)(df)
+        for orig, filt in zip(fps, result["__MolFP__"]):
+            assert tuple(orig.GetOnBits()) == tuple(filt.GetOnBits())
+
+    def test_custom_out_column(self, fp_dataframe):
+        result = CommonBitFilter(out_column="__MolFP_filtered__")(fp_dataframe)
+        assert "__MolFP_filtered__" in result.columns
+        assert "__MolFP__" in result.columns  # original preserved
 
 
 class TestButinaClustering(BaseTest):
