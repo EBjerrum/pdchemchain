@@ -90,6 +90,31 @@ def get_tool_path(tool_name: str, explicit_path: str = None) -> str:
     )
 
 
+def get_num_physical_cores() -> int:
+    """Get number of physical CPU cores (excluding hyperthreads).
+
+    Parses /proc/cpuinfo for unique (physical_id, core_id) pairs.
+    Falls back to os.cpu_count() if /proc/cpuinfo is unavailable.
+    """
+    try:
+        with open("/proc/cpuinfo") as f:
+            cores = set()
+            phys_id = core_id = None
+            for line in f:
+                if line.startswith("physical id"):
+                    phys_id = line.split(":")[1].strip()
+                elif line.startswith("core id"):
+                    core_id = line.split(":")[1].strip()
+                    if phys_id is not None:
+                        cores.add((phys_id, core_id))
+                        phys_id = core_id = None
+            if cores:
+                return len(cores)
+    except OSError:
+        pass
+    return os.cpu_count() or 1
+
+
 def get_schrodinger_path(explicit_path: str = None) -> str:
     """Convenience wrapper for Schrodinger path discovery."""
     return get_tool_path("schrodinger", explicit_path)

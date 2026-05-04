@@ -12,7 +12,7 @@ import pandas as pd
 from rdkit import Chem
 
 from pdchemchain.base import Link
-from pdchemchain.config import ensure_schrodinger_job_server, get_schrodinger_path
+from pdchemchain.config import ensure_schrodinger_job_server, get_num_physical_cores, get_schrodinger_path
 from pdchemchain.errormanager import has_error
 from pdchemchain.typing import InColumnName, Partitionable
 
@@ -330,7 +330,7 @@ class GlideDock(Link):
             str(in_file_path),
             "-WAIT",
             "-HOST",
-            "localhost",
+            f"localhost:{get_num_physical_cores()}",
             "-NJOBS",
             str(self.njobs),
         ]

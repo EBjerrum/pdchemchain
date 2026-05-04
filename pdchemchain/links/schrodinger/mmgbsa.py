@@ -12,7 +12,7 @@ import pandas as pd
 from rdkit import Chem
 
 from pdchemchain.base import Link
-from pdchemchain.config import get_schrodinger_path, ensure_schrodinger_job_server
+from pdchemchain.config import get_num_physical_cores, get_schrodinger_path, ensure_schrodinger_job_server
 from pdchemchain.errormanager import has_error
 from pdchemchain.typing import InColumnName, Partitionable
 
@@ -276,7 +276,7 @@ class PrimeMMGBSA(Link):
             "-flexdist", str(self.flexdist),
             "-OVERWRITE",
             "-WAIT",
-            "-HOST", "localhost",
+            "-HOST", f"localhost:{get_num_physical_cores()}",
             "-NJOBS", str(self.njobs),
         ]
 
