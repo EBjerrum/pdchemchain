@@ -117,6 +117,7 @@ class NullLink(Link):
         self.logger.debug(f"Applying link {self.name}")
         return df
 
+IdentityLink = NullLink # Better name, TODO set up deprecation of NullLink
 
 @dataclass
 class RowEval(RowLink):
