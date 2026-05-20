@@ -29,3 +29,30 @@ Example:
 
     """
 ```
+
+## Dataclass pitfall: `@property` does not work
+
+All links are `@dataclass` classes. If you need to validate or intercept attribute assignment (e.g. validating a list of allowed values), **do not use `@property`** — the property descriptor replaces the dataclass field default, breaking the generated `__init__`.
+
+Instead, use `__setattr__` to intercept specific fields:
+
+```python
+@dataclass
+class MyLink(RowLink):
+    calculations: List[str] = field(default_factory=lambda: ["default"])
+
+    def __post_init__(self):
+        super().__post_init__()
+        self._validate_calculations(self.calculations)
+
+    def __setattr__(self, name, value):
+        if name == "calculations" and hasattr(self, "logger"):
+            self._validate_calculations(value)
+        super().__setattr__(name, value)
+
+    def _validate_calculations(self, calcs):
+        # your validation here
+        pass
+```
+
+The `hasattr(self, "logger")` guard skips validation during `__init__` (before the logger is set up by `__post_init__`). The explicit `__post_init__` call handles the initial validation once the logger exists.
