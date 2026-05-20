@@ -10,6 +10,9 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors, PandasTools, RDConfig, rdFingerprintGenerator
 from rdkit.Chem.MolStandardize import rdMolStandardize
 from rdkit.ML.Descriptors.MoleculeDescriptors import MolecularDescriptorCalculator
+#Allow import of sascorer
+sys.path.append(os.path.join(RDConfig.RDContribDir, 'SA_Score'))
+import sascorer # type: ignore
 
 from pdchemchain.base import Link, RowLink
 from pdchemchain.errormanager import RDKitErrorContextManager
@@ -455,6 +458,28 @@ class RemoveStereoSmiles(RowLink):
         row[self.out_column] = row[self.in_column].replace("@", "")
         return row
 
+@dataclass
+class SAScore(RowLink):
+    """Calculate SAScore for a molecule
+
+    Calculation of SAScore for a molecule, using the Contrib's implementation in RDKit
+
+    Parameters
+    ----------
+    in_column
+        The label for the column containing the RDKit molecule
+    out_column
+        The label for the column to store the SAScore
+    """
+
+    in_column: InColumnName = "ROMol"
+    out_column: str = "SAScore"
+
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        mol = row[self.in_column]
+        if mol:
+            row[self.out_column] = sascorer.calculateScore(mol)
+        return row
 
 @dataclass
 class SuperParent(RowLink):

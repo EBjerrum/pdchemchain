@@ -84,8 +84,16 @@ Cons:
 
 ## Installation
 
+Installation from open-source version:
 ```bash
 pip install git+https://github.com/EBjerrum/pdchemchain.git
+```
+
+Developer installation:
+```bash
+git clone git@github.com:EBjerrum/pdchemchain.git
+cd pdchemchain
+pip install -e .[dev]
 ```
 
 ## Documentation
