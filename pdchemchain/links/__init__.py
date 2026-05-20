@@ -14,3 +14,10 @@ try:
 except ImportError:
     # Contrib dependencies not installed
     pass
+
+# Schrodinger links - require Schrodinger installation
+try:
+    from .schrodinger import *
+except (ImportError, FileNotFoundError):
+    # Schrodinger not available
+    pass

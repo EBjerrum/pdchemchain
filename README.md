@@ -69,7 +69,17 @@ Cons:
 - The simplistic pipeline creation and dogmatic API gives some restrictions, as example the pipeline can't return both a dataframe and a dataframe with errors. Errors on single rows are marked
 - The framework are aimed for in_memory usage, so very large dataframes can give issues as pandas usually works on copies. The `SerialPartitionProcesser` wrapper link can significantly reduce memory issues, and links like `DropColumns` or `KeepColumns` can also be used to reduce dataframe size.
 - Most links work row by row, and cross-row calculations may not be fully supported (e.g. if using partitioning links). Aggregation of columns values or grouping operations will not necessarely be fully compatible with all other links.
-- Certain names for columns are not allowed as they are needed for internal usage, so avoid dunder column names starting and ending with double underscores e.g. `__error__`
+- Certain names for columns are not allowed as they are needed for internal usage, so avoid dunder column names starting and ending with double underscores. Reserved dunder columns (automatically excluded from SDF export by `ToSDF`):
+
+  | Column | Created By | Purpose |
+  |--------|-----------|---------|
+  | `__error__` | Error handlers | Exception/failure messages |
+  | `__log__` | RowLogger | Row-level log messages |
+  | `__id__` | ExpandableRowLink, LigPrep, GlideDock | Original compound tracking |
+  | `__enum_id__` | ExpandableRowLink, LigPrep, GlideDock | Variant/pose sequence number |
+  | `__MolFP__` | MolToFingerprint | Fingerprint objects (intermediate) |
+  | `__ROMolLigPrep__` | LigPrep | 3D prepared molecule from LigPrep |
+  | `__ROMolDocked__` | GlideDock | Docked pose from Glide |
 - May not be able to build all types of fully directed acyclic graph. I'm not 100% sure if the chain creation dogma and current links allow for all types of directed acyclic graph to be defined, but it has worked for my use-cases so far.
 
 ## Installation
