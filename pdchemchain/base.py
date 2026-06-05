@@ -221,6 +221,32 @@ class Link(ABC, SelfConfigurable):
 
     __radd__ = __add__
 
+    def __or__(self, other):
+        if isinstance(other, Link):
+            return UnionLink(link1=self, link2=other)
+        return NotImplemented
+
+    def __ror__(self, other):
+        if isinstance(other, Link):
+            return UnionLink(link1=other, link2=self)
+        return NotImplemented
+
+    def chunked(self, size: int) -> "SerialPartitionProcessor":
+        """Wrap this link in a SerialPartitionProcessor with the given partition size."""
+        from pdchemchain.links.hpc import SerialPartitionProcessor
+        return SerialPartitionProcessor(link=self, partition_size=size)
+
+    def parallel(self, workers: int = None) -> "ParallelPartitionProcessor":
+        """Wrap this link in a ParallelPartitionProcessor.
+
+        Uses 2x workers as num_partitions so slower partitions don't idle cores.
+        """
+        from pdchemchain.links.hpc import ParallelPartitionProcessor
+        if workers is None:
+            import psutil
+            workers = psutil.cpu_count(logical=False)
+        return ParallelPartitionProcessor(link=self, num_processes=workers, num_partitions=2 * workers)
+
     # Error handling for df level
     def _concatenate_strings(self, str1, str2) -> str:
         """Combine two variables that may be strings or None/float('nan), in a safe way"""

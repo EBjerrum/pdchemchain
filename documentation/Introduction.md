@@ -58,38 +58,72 @@ Compound links control how data flows through the pipeline.
 
 ### UnionLink
 
-Runs the DataFrame through two parallel paths and merges the results:
+Runs the DataFrame through two parallel paths and merges the results. Values from the left path take precedence on overlapping columns.
 
 <p align="center"><img src="images/unionlink.png" width="365"></p>
+
+The recommended syntax uses the `|` operator, which mirrors how `+` builds a `Chain`:
+
+```python
+union = path_a | path_b
+df_out = union(df)
+```
+
+It composes naturally into larger pipelines:
+
+```python
+pipeline = link1 + link2 + (link3 | link4) + link5
+```
+
+**Operator precedence — use parentheses for clarity**
+
+In Python, `+` binds more tightly than `|`, just like multiplication before addition in arithmetic. This means:
+
+```python
+link1 + link2 | link3 + link4
+# is actually: (link1 + link2) | (link3 + link4)
+# NOT:        ((link1 + link2) | link3) + link4  ← naive left-to-right reading
+```
+
+The precedence works in your favour here, but a reader unfamiliar with it may be surprised. Always use parentheses to make the structure explicit:
+
+```python
+# Recommended — intent is unambiguous:
+pipeline = prep + filter + (score_transform | passthrough) + output
+
+# Avoid — correct but confusing:
+pipeline = prep + filter + score_transform | passthrough + output
+```
+
+For example, running an expensive calculation only on molecules that pass a filter, while keeping the rest unchanged:
+
+```python
+from pdchemchain.links import Query, NullLink
+
+# Only run expensive docking on molecules that pass a QSAR filter
+pipeline = qsar + (
+    Query(query="QsarScore > 0.5") + expensive_docking_chain
+    | Query(query="QsarScore <= 0.5")   # these rows pass through unchanged
+)
+```
+
+Another common pattern is filtering out unwanted rows while saving them for later inspection:
+
+```python
+from pdchemchain.links import Query, ToFile, DropTable
+
+union = (
+    Query(query="QsarScore > 0.5")                                              # keep good rows
+    | Query(query="QsarScore <= 0.5") + ToFile("rejected.csv") + DropTable()   # save and discard
+)
+```
+
+You can also construct `UnionLink` explicitly, which is useful when building pipelines programmatically:
 
 ```python
 from pdchemchain import UnionLink
 
 union = UnionLink(link1=path_a, link2=path_b)
-df_out = union(df)
-```
-
-This is useful when you need to apply different processing to different subsets. For example, running an expensive calculation only on molecules that pass a filter, while keeping the rest unchanged:
-
-```python
-from pdchemchain.links import Query, NullLink
-
-# Only run expensive Docking on molecules that pass a Qsar filter
-union = UnionLink(
-    link1=Query(query="QsarScore > 0.5") + expensive_docking_chain,
-    link2=Query(query="QsarScore <= 0.5"),  # these rows pass through as-is
-)
-```
-
-Another common pattern is filtering out unwanted rows while saving them to a file for later inspection:
-
-```python
-from pdchemchain.links import Query, ToFile, DropTable
-
-union = UnionLink(
-    link1=Query(query="QsarScore > 0.5"),                                           # keep good rows
-    link2=Query(query="QsarScore <= 0.5") + ToFile("rejected.csv") + DropTable(),   # save and discard
-)
 ```
 
 ### Partitioned Processing
@@ -104,10 +138,29 @@ For large datasets, partition processors split the DataFrame into chunks:
 
 <p align="center"><img src="images/serial_partition.png" width="490"></p>
 
+The recommended syntax uses fluent methods directly on any link or chain:
+
+```python
+# Parallel: defaults to physical core count, 2x partitions for better load balancing
+parallel = my_chain.parallel()          # auto workers
+parallel = my_chain.parallel(workers=4) # explicit
+
+# Serial: chunks of fixed size
+serial = my_chain.chunked(1000)
+```
+
+These compose naturally in pipelines:
+
+```python
+pipeline = prep_chain.parallel(4) + filter + scoring.chunked(500)
+```
+
+You can also construct the processors explicitly, which is useful for full control over partitioning:
+
 ```python
 from pdchemchain.links import ParallelPartitionProcessor, SerialPartitionProcessor
 
-parallel = ParallelPartitionProcessor(link=my_chain, n_partitions=4)
+parallel = ParallelPartitionProcessor(link=my_chain, num_processes=4, num_partitions=8)
 serial = SerialPartitionProcessor(link=my_chain, partition_size=1000)
 ```
 
