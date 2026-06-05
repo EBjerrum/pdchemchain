@@ -5,11 +5,16 @@ UMAPEmbedding requires: pip install umap-learn
 tSNEEmbedding requires: pip install scikit-learn
 """
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 from rdkit import DataStructs
+
+# Numba emits extensive DEBUG-level output during JIT compilation.
+# Suppress it here so pdchemchain's own DEBUG level doesn't flood the logs.
+logging.getLogger("numba").setLevel(logging.WARNING)
 
 from pdchemchain.base import Link
 from pdchemchain.typing import InColumnName, Partitionable
@@ -56,6 +61,7 @@ class UMAPEmbedding(Link):
     n_neighbors: int = 15
     min_dist: float = 0.1
     random_state: int = 42
+    low_memory: bool = True
 
     def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
         try:
@@ -75,6 +81,8 @@ class UMAPEmbedding(Link):
             min_dist=self.min_dist,
             metric="jaccard",
             random_state=self.random_state,
+            low_memory=self.low_memory,
+            verbose=False,
         ).fit_transform(X)
 
         df = df.copy()

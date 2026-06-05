@@ -3,7 +3,6 @@
 Direction is inferred from good_value vs bad_value — no explicit objective/reverse parameters needed.
 All transforms share the pattern: good_value → 1.0, bad_value → 0.0.
 """
-import io
 import math
 from dataclasses import dataclass
 
@@ -104,6 +103,7 @@ class _ScoreTransform(RowLink):
     def _repr_png_(self):
         """Return PNG bytes for Jupyter auto-display."""
         try:
+            import io
             import matplotlib.pyplot as plt
             fig = self._build_figure()
             buf = io.BytesIO()
