@@ -168,3 +168,6 @@ pdchemchain/_version.py
 pdchemchain/templates.py
 tests/Standard_functionality.txt
 *sandbox*
+
+# Push gate file — create manually when doing a deliberate release push
+OPENSOURCE_APPROVED
