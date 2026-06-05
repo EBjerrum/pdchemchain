@@ -18,52 +18,6 @@ from pdchemchain.base import Link, RowLink
 from pdchemchain.errormanager import RDKitErrorContextManager
 from pdchemchain.typing import InColumnName, Partitionable
 
-
-@dataclass
-class ABMPSScore(RowLink):
-    """Calculate AB-MPS score
-    
-    Calculates the AB-MPS score defined as: abs(cLogP - 3) + NumAromaticRings + NumRotatableBonds
-    
-    This score provides a simple metric for evaluate bRo5 chemical matter, 
-    with AB-MPS values of ≤14 predicting a higher probability of success.
-    
-    Reference: Beyond the Rule of 5: Lessons Learned from AbbVie's Drugs and Compound Collection
-    https://doi.org/10.1021/acs.jmedchem.7b00717
-    
-    Parameters
-    ----------
-    in_column
-        The label for the column containing the molecules to analyze
-    out_column
-        The label for the column that should store the AB-MPS score
-    """
-    
-    in_column: InColumnName = "ROMol"
-    out_column: str = "AB_MPS_Score"
-    
-    def __post_init__(self):
-        super().__post_init__()
-        # Set up descriptor calculator for the three needed descriptors
-        Warning("This class is currently NOT calculating the right ABMPSscore as it depends on logD not LogP as used here")
-        descriptors = ["MolLogP", "NumAromaticRings", "NumRotatableBonds"]
-        self.calculator = MolecularDescriptorCalculator(descriptors)
-    
-    def _row_apply(self, row: pd.Series) -> pd.Series:
-        mol = row[self.in_column]
-        if isinstance(mol, Chem.Mol):
-            # Calculate the three descriptors
-            clogp, num_aromatic_rings, num_rotatable_bonds = self.calculator.CalcDescriptors(mol)
-            
-            # Calculate AB-MPS score: abs(cLogP - 3) + NAR + NRB
-            ab_mts_score = abs(clogp - 3) + num_aromatic_rings + num_rotatable_bonds
-            
-            row[self.out_column] = ab_mts_score
-        else:
-            raise ValueError(f"Seemingly not a Mol object: {mol} of type {type(mol)}")
-        return row
-
-
 @dataclass
 class ElementsInList(RowLink):
     """Checks if a given molecule only has certain elements
