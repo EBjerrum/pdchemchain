@@ -124,6 +124,11 @@ class FromSDF(Link):
         - Atomic number 0 (wildcard)
         - Molecule name "ERROR_NO_MOLECULE"
         Default: False
+    infer_types : bool
+        If True, attempts to cast string columns to numeric types after loading.
+        SDF properties are always read as strings by RDKit; this restores numeric
+        types for columns where all non-null values parse cleanly as numbers.
+        Columns with any non-numeric values are left as strings. Default: True
     sdf_load_options : Dict[str, any]
         Additional keyword arguments passed to PandasTools.LoadSDF
         Common options: removeHs (bool), sanitize (bool), strictParsing (bool)
@@ -138,6 +143,7 @@ class FromSDF(Link):
     filename: str
     mol_column: str = "ROMol"
     recognize_placeholders: bool = True
+    infer_types: bool = True
     sdf_load_options: Dict[str, any] = field(default_factory=dict)
 
     def apply(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
@@ -183,6 +189,14 @@ class FromSDF(Link):
                 self.logger.info(
                     f"Converted {placeholder_count} error placeholder molecules back to None"
                 )
+
+        if self.infer_types:
+            for col in df.columns:
+                if col == self.mol_column:
+                    continue
+                converted = pd.to_numeric(df[col], errors="coerce")
+                if converted.isna().sum() == df[col].isna().sum():
+                    df[col] = converted
 
         self.logger.info(
             f"Loaded dataframe from SDF file {self.filename}, "

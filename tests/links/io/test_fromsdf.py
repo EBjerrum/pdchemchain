@@ -61,6 +61,6 @@ class TestFromSDF(BaseTest):
         assert "int1" in df.columns
         assert "int2" in df.columns
         assert "letters1" in df.columns
-        # SDF properties are loaded as strings
-        assert list(df["int1"]) == ["1", "2", "1"]
+        # Numeric properties are inferred as int/float; strings stay as strings
+        assert list(df["int1"]) == [1, 2, 1]
         assert list(df["letters1"]) == ["a", "b", "c"]
