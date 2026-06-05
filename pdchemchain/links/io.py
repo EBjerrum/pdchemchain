@@ -8,6 +8,13 @@ from pdchemchain.io_utilities import df_process_to_csv
 from pdchemchain.typing import InColumnName
 
 
+def _generate_romol(df: pd.DataFrame, smiles_column: str, logger) -> pd.DataFrame:
+    """(Re)generate ROMol column from a SMILES column, overwriting any existing ROMol."""
+    from pdchemchain.links.chemistry import MolFromSmiles
+    logger.info(f"(Re)generating ROMol from SMILES column '{smiles_column}'")
+    return MolFromSmiles(in_column=smiles_column)(df)
+
+
 @dataclass
 class FromFile(Link):
     """Reads dataframe from a CSV file
@@ -39,6 +46,7 @@ class FromFile(Link):
     """
 
     filename: str
+    mol_from_smiles_column: Optional[str] = None
     pd_readcsv_options: Dict[str, any] = field(default_factory=lambda: {"sep": ","})
 
     def apply(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
@@ -60,6 +68,8 @@ class FromFile(Link):
         self.logger.info(
             f"Loaded dataframe from CSV file {self.filename}, dataframe has {len(df)} rows."
         )
+        if self.mol_from_smiles_column is not None:
+            df = _generate_romol(df, self.mol_from_smiles_column, self.logger)
         return df
 
 
@@ -129,6 +139,11 @@ class FromSDF(Link):
         SDF properties are always read as strings by RDKit; this restores numeric
         types for columns where all non-null values parse cleanly as numbers.
         Columns with any non-numeric values are left as strings. Default: True
+    mol_from_smiles_column : str, optional
+        When set, (re)generates the ROMol column from the named SMILES column,
+        overwriting any molecule loaded from the SDF. Useful for stripping 3D
+        coordinates before redocking, or for running SDF pipelines on CSV input.
+        Default: None (use molecule as loaded)
     sdf_load_options : Dict[str, any]
         Additional keyword arguments passed to PandasTools.LoadSDF
         Common options: removeHs (bool), sanitize (bool), strictParsing (bool)
@@ -144,6 +159,7 @@ class FromSDF(Link):
     mol_column: str = "ROMol"
     recognize_placeholders: bool = True
     infer_types: bool = True
+    mol_from_smiles_column: Optional[str] = None
     sdf_load_options: Dict[str, any] = field(default_factory=dict)
 
     def apply(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
@@ -197,6 +213,9 @@ class FromSDF(Link):
                 converted = pd.to_numeric(df[col], errors="coerce")
                 if converted.isna().sum() == df[col].isna().sum():
                     df[col] = converted
+
+        if self.mol_from_smiles_column is not None:
+            df = _generate_romol(df, self.mol_from_smiles_column, self.logger)
 
         self.logger.info(
             f"Loaded dataframe from SDF file {self.filename}, "

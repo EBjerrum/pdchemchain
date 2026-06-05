@@ -79,6 +79,48 @@ SDF files use the **"ROMol"** column name by default for molecule objects. If yo
 pdchemchain run pipeline.yaml --in_file mols.sdf --mol_column Molecule --out_file results.sdf
 ```
 
+### Designing Reusable Pipelines
+
+Pipelines saved as YAML work best when they make no assumptions about the input file — no hardcoded filenames, and no dependence on a specific file format. The recommended pattern is to **design pipelines that expect an `ROMol` column** rather than a `Smiles` column. This makes the same YAML usable with both CSV and SDF inputs via the CLI.
+
+**Best practice — pipeline expects ROMol:**
+
+```yaml
+# pipeline.yaml — no FromFile/FromSDF inside, just processing logic
+__class__: pdchemchain.base.Chain
+links:
+  - __class__: pdchemchain.links.chemistry.RDKitDescriptors
+    in_column: ROMol
+    ...
+```
+
+```bash
+# Run on SDF — ROMol comes directly from the file
+pdchemchain run pipeline.yaml --in_file compounds.sdf --out_file results.csv
+
+# Run on CSV — generate ROMol from the Smiles column before running
+pdchemchain run pipeline.yaml --in_file compounds.csv --mol_from_smiles_column Smiles --out_file results.csv
+```
+
+**Other valid pipeline designs:**
+
+Pipelines can also embed file paths or expect a `Smiles` column — these are valid for specific use cases:
+
+```yaml
+# Self-contained pipeline with hardcoded input
+__class__: pdchemchain.base.Chain
+links:
+  - __class__: pdchemchain.links.io.FromFile
+    filename: /data/compounds.csv
+    mol_from_smiles_column: Smiles
+  - __class__: pdchemchain.links.chemistry.RDKitDescriptors
+    ...
+```
+
+The `ROMol`-first design is simply the most interoperable — the same pipeline file works unchanged across file formats, and the file-loading details stay at the CLI level where they belong.
+
+**Generating SMILES from an SDF:** if your pipeline needs a `Smiles` column derived from the loaded molecules (e.g. for canonicalization), add `MolToSmiles` as the first link in the chain rather than relying on a property stored in the SDF.
+
 ### Handling None/Failed Molecules
 
 When processing molecules, some may fail to parse or convert (e.g., invalid SMILES). pdchemchain handles these gracefully when writing to SDF:
@@ -163,6 +205,7 @@ pdchemchain run --help
 | `--in_format [csv\|sdf]` | Override input format detection |
 | `--out_format [csv\|sdf]` | Override output format detection |
 | `--mol_column TEXT` | Molecule column name for SDF files (default: "ROMol") |
+| `--mol_from_smiles_column TEXT` | Generate ROMol from named SMILES column after loading (CSV or SDF) |
 | `--error_file PATH` | Error file path for failed rows |
 | `--sep TEXT` | CSV separator (default: auto-detect) |
 | `--pd_read_option TEXT` | Extra pandas read options (keyword=value, repeatable) |

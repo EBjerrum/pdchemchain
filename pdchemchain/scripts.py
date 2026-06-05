@@ -71,6 +71,7 @@ def process_data(
     in_format,
     out_format,
     mol_column,
+    mol_from_smiles_column,
     sep,
     config_file,
     error_file,
@@ -120,7 +121,7 @@ def process_data(
                 pd_read_options["sep"] = None
                 logger.info("No separator specified, pandas will auto-detect")
 
-            read_file = FromFile(in_file, pd_readcsv_options=pd_read_options)
+            read_file = FromFile(in_file, mol_from_smiles_column=mol_from_smiles_column, pd_readcsv_options=pd_read_options)
         elif in_format.lower() == "sdf":
             # Extract SDF-specific options (prefixed with sdf_)
             sdf_read_opts = {
@@ -129,7 +130,7 @@ def process_data(
                 if k.startswith("sdf_")
             }
             read_file = FromSDF(
-                in_file, mol_column=mol_column, sdf_load_options=sdf_read_opts
+                in_file, mol_column=mol_column, mol_from_smiles_column=mol_from_smiles_column, sdf_load_options=sdf_read_opts
             )
         else:
             raise ValueError(f"Unsupported input format: {in_format}")
@@ -245,6 +246,14 @@ def process_data(
     help='Molecule column name for SDF files (default: "ROMol")',
 )
 @click.option(
+    "--mol_from_smiles_column",
+    default=None,
+    type=str,
+    help='(Re)generate ROMol from the named SMILES column after loading. Works for both CSV and SDF input. '
+         'For CSV: generates ROMol so pipelines built for SDF work unchanged. '
+         'For SDF: substitutes the loaded 3D molecule with one from SMILES, e.g. to strip coordinates before redocking.',
+)
+@click.option(
     "--error_file",
     default=None,
     type=click.Path(writable=True),
@@ -282,6 +291,7 @@ def run(
     in_format,
     out_format,
     mol_column,
+    mol_from_smiles_column,
     error_file,
     sep,
     debug_level,
@@ -318,6 +328,7 @@ def run(
         in_format,
         out_format,
         mol_column,
+        mol_from_smiles_column,
         sep,
         config_file,
         error_file,
