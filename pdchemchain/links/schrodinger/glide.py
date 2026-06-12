@@ -26,6 +26,7 @@ def _generate_in_file(
     poses_per_lig: int,
     in_file: str = None,
     overrides: dict = None,
+    output_format: str = "sd",
 ) -> str:
     """Generate Glide .in file content.
 
@@ -41,6 +42,8 @@ def _generate_in_file(
         Path to user-provided Maestro .in file.
     overrides : dict, optional
         Additional keyword overrides.
+    output_format : str
+        Output format: "sd" for SDF or "mae" for Maestro.
 
     Returns
     -------
@@ -48,6 +51,7 @@ def _generate_in_file(
         Complete .in file content.
     """
     overrides = overrides or {}
+    pose_outtype = "ligandlib" if output_format == "mae" else "ligandlib_sd"
 
     if in_file is None:
         # Minimal .in with overrides applied
@@ -55,7 +59,7 @@ def _generate_in_file(
             f"GRIDFILE  {grid_file}",
             f"PRECISION  SP",
             f"POSES_PER_LIG  {poses_per_lig}",
-            f"POSE_OUTTYPE  ligandlib_sd",
+            f"POSE_OUTTYPE  {pose_outtype}",
             f"LIGANDFILE  {ligand_file}",
         ]
         # Apply overrides (replace matching keys)
@@ -102,7 +106,7 @@ def _generate_in_file(
     # Insert managed keys in top section
     top_lines.append(f"GRIDFILE  {grid_file}\n")
     top_lines.append(f"POSES_PER_LIG  {poses_per_lig}\n")
-    top_lines.append(f"POSE_OUTTYPE  ligandlib_sd\n")
+    top_lines.append(f"POSE_OUTTYPE  {pose_outtype}\n")
     top_lines.append(f"LIGANDFILE  {ligand_file}\n")
 
     # Insert user overrides in top section
@@ -128,7 +132,7 @@ def _write_ligands_sdf(
         if mol is None:
             continue
         key = str(idx)
-        mol = Chem.RWMol(mol)
+        mol = Chem.Mol(mol)
         mol.SetProp("_Name", key)
         writer.write(mol)
         written.append(key)
@@ -148,6 +152,61 @@ def _find_output_sdf(tmpdir: Path) -> Path | None:
         if sdf.name != "ligands.sdf":
             return sdf
     return None
+
+
+def _find_output_mae(tmpdir: Path) -> Path | None:
+    """Find Glide output MAE file in temp directory."""
+    for pattern in ["*_lib.maegz", "*_lib.mae"]:
+        matches = list(tmpdir.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _read_docked_mae(
+    filepath: Path,
+) -> list[tuple[str, dict[str, float], Chem.rdchem.Mol]]:
+    """Read Glide output MAE file.
+
+    Returns list of (original_key, scores_dict, mol) tuples.
+    """
+    results = []
+
+    if filepath.suffix == ".maegz":
+        import gzip as _gzip
+        fh = _gzip.open(str(filepath))
+    else:
+        fh = open(filepath, "rb")
+
+    try:
+        suppl = Chem.MaeMolSupplier(fh, removeHs=False)
+        for mol in suppl:
+            if mol is None:
+                continue
+
+            if not mol.HasProp("_Name"):
+                continue
+            original_key = mol.GetProp("_Name")
+
+            scores = {}
+            for prop_name, score_key in [
+                ("r_i_docking_score", "docking_score"),
+                ("r_i_glide_gscore", "glide_gscore"),
+                ("r_i_glide_emodel", "glide_emodel"),
+            ]:
+                if mol.HasProp(prop_name):
+                    try:
+                        scores[score_key] = float(mol.GetProp(prop_name))
+                    except (ValueError, RuntimeError):
+                        scores[score_key] = np.nan
+                else:
+                    scores[score_key] = np.nan
+
+            results.append((original_key, scores, mol))
+    finally:
+        fh.close()
+
+    return results
 
 
 def _read_docked_sdf(
@@ -233,6 +292,10 @@ class GlideDock(Link):
         Output column name for docked poses.
     poses_per_lig : int
         Number of docking poses to generate per ligand.
+    output_format : str
+        Output file format: "sd" for SDF (default) or "mae" for Maestro.
+        Use "mae" when grids contain rotatable groups that are incompatible
+        with SDF output.
     overrides : dict
         Glide keyword overrides (e.g. ``{"PRECISION": "XP"}``).
     njobs : int
@@ -262,6 +325,9 @@ class GlideDock(Link):
     store_poses: bool = True
     pose_column: str = "__ROMolDocked__"
     poses_per_lig: int = 1
+
+    # Output format
+    output_format: str = "sd"  # "sd" or "mae"
 
     # .in file overrides
     overrides: dict = field(default_factory=dict)
@@ -315,6 +381,7 @@ class GlideDock(Link):
             poses_per_lig=self.poses_per_lig,
             in_file=self.in_file,
             overrides=self.overrides,
+            output_format=self.output_format,
         )
         in_file_path = tmpdir / "glide.in"
         with open(in_file_path, "w") as f:
@@ -344,12 +411,19 @@ class GlideDock(Link):
             )
 
         # Find and parse output
-        output_file = _find_output_sdf(tmpdir)
+        if self.output_format == "mae":
+            output_file = _find_output_mae(tmpdir)
+        else:
+            output_file = _find_output_sdf(tmpdir)
+
         if output_file is None:
             self.logger.warning("GlideDock: no output file found")
             parsed = []
         else:
-            parsed = _read_docked_sdf(output_file)
+            if self.output_format == "mae":
+                parsed = _read_docked_mae(output_file)
+            else:
+                parsed = _read_docked_sdf(output_file)
             self.logger.info(
                 f"GlideDock: {len(written_keys)} input → {len(parsed)} docked poses"
             )
