@@ -4,7 +4,7 @@ import pandas as pd
 
 # Configure the logging settings with a custom formatter
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(name)s: %(message)s"
+    level=logging.INFO,format="%(asctime)s - %(levelname)s - %(name)s: %(message)s"
 )
 
 
