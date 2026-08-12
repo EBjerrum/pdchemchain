@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Markdown files (add specific ones with git add -f)
+*.md
+
+# Claude Code
+.claude/
+
 # C extensions
 *.so
 
