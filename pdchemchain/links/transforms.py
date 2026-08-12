@@ -336,3 +336,59 @@ class PlateauTransform(_ScoreTransform):
         ax.axvline(self._b_lo, color="red", linestyle="--", alpha=0.7, label=f"bad lo ({self._b_lo})")
         ax.axvline(self._b_hi, color="red", linestyle="--", alpha=0.7, label=f"bad hi ({self._b_hi})")
         ax.legend(fontsize=8)
+
+
+@dataclass
+class ADSTransform(_ScoreTransform):
+    """Asymmetric Double Sigmoidal transform (Bickerton et al. 2012).
+
+    Computes: d(x) = (A + B * sigmoid_left * (1 - sigmoid_right)) / DMAX
+    where sigmoid_left = 1/(1+exp(-(x-C+D/2)/E))
+    and sigmoid_right = 1/(1+exp(-(x-C-D/2)/F))
+
+    This is the functional form used in the QED (Quantitative Estimate of
+    Drug-likeness) score. Parameters A-F and DMAX are typically derived by
+    fitting to property distributions of approved drugs.
+
+    Parameters
+    ----------
+    in_column
+        Column with the raw score to transform.
+    out_column
+        Column to store the transformed score in [0, 1].
+    A, B, C, D, E, F
+        ADS curve parameters. C is the center, D the plateau width,
+        E and F the left/right sigmoid steepness.
+    DMAX
+        Normalization constant (maximum of unnormalized ADS).
+    """
+
+    A: float = 0.0
+    B: float = 1.0
+    C: float = 0.0
+    D: float = 0.0
+    E: float = 1.0
+    F: float = 1.0
+    DMAX: float = 1.0
+
+    def _compute(self, value: float) -> float:
+        try:
+            left = 1.0 / (1.0 + math.exp(-1.0 * (value - self.C + self.D / 2.0) / self.E))
+            right = 1.0 / (1.0 + math.exp(-1.0 * (value - self.C - self.D / 2.0) / self.F))
+        except OverflowError:
+            # Extreme values: clamp
+            left = 0.0 if (value - self.C + self.D / 2.0) / self.E < 0 else 1.0
+            right = 0.0 if (value - self.C - self.D / 2.0) / self.F < 0 else 1.0
+        return (self.A + self.B * left * (1.0 - right)) / self.DMAX
+
+    def _plot_range(self) -> tuple[float, float]:
+        # Estimate range from C and E/F steepness
+        span = max(abs(self.E), abs(self.F)) * 8 + abs(self.D)
+        return (self.C - span, self.C + span)
+
+    def _annotate(self, ax):
+        ax.axvline(self.C, color="green", linestyle="--", alpha=0.7, label=f"center C={self.C:.1f}")
+        if self.D > 0.1:
+            ax.axvspan(self.C - self.D/2, self.C + self.D/2, alpha=0.1, color="green",
+                      label=f"plateau D={self.D:.1f}")
+        ax.legend(fontsize=8)

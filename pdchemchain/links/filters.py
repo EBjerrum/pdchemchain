@@ -32,7 +32,8 @@ class SMARTSFilterBase(RowLink, ABC):
     
     in_column: InColumnName = "ROMol"
     out_column: str = "filter_score"
-    
+    count: bool | str = False
+
     def __post_init__(self):
         super().__post_init__()
         # Precompile SMARTS patterns for efficiency
@@ -61,18 +62,28 @@ class SMARTSFilterBase(RowLink, ABC):
     def _row_apply(self, row: pd.Series) -> pd.Series:
         mol = row[self.in_column]
         if isinstance(mol, Chem.Mol):
-            # Check if molecule matches any problematic pattern
-            has_match = any(
-                mol.HasSubstructMatch(pattern) 
-                for pattern in self.smarts_patterns
-            )
-            
-            # Return inverted score: 1 - match (1.0 = pass, 0.0 = fail)
-            filter_score = 0.0 if has_match else 1.0
-            row[self.out_column] = filter_score
+            if self.count == "matches":
+                # Total atom-level matches across all patterns
+                row[self.out_column] = sum(
+                    len(mol.GetSubstructMatches(pattern))
+                    for pattern in self.smarts_patterns
+                )
+            elif self.count:
+                # Number of patterns that match (binary per pattern)
+                row[self.out_column] = sum(
+                    1 for pattern in self.smarts_patterns
+                    if mol.HasSubstructMatch(pattern)
+                )
+            else:
+                has_match = any(
+                    mol.HasSubstructMatch(pattern)
+                    for pattern in self.smarts_patterns
+                )
+                row[self.out_column] = 0.0 if has_match else 1.0
         else:
             raise ValueError(f"Seemingly not a Mol object: {mol} of type {type(mol)}")
         return row
+
 
 
 @dataclass
