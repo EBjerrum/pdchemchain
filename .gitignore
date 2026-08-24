@@ -169,6 +169,7 @@ cython_debug/
 
 notebooks
 documentation/reinvent/
+documentation/preprint
 pdchemchain.code-workspace
 pdchemchain/_version.py
 pdchemchain/templates.py
