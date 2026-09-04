@@ -9,7 +9,7 @@ __pycache__/
 # Claude Code
 .claude/
 
-# Git hooks (tracked on abbvie-main only)
+# Git hooks (internal use only)
 .githooks/
 
 # C extensions
