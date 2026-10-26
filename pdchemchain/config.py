@@ -91,11 +91,41 @@ def get_tool_path(tool_name: str, explicit_path: str = None) -> str:
 
 
 def get_num_physical_cores() -> int:
-    """Get number of physical CPU cores (excluding hyperthreads).
+    """Get the number of cores this process may actually use.
 
-    Parses /proc/cpuinfo for unique (physical_id, core_id) pairs.
-    Falls back to os.cpu_count() if /proc/cpuinfo is unavailable.
+    Respects, in order of precedence:
+
+    1. ``SCHRODINGER_HOST`` of the form ``localhost:N`` -- an explicit override.
+    2. The CPU affinity mask (``sched_getaffinity``), which is what a batch scheduler
+       such as SLURM restricts the process to.
+    3. Physical cores from ``/proc/cpuinfo``, excluding hyperthreads.
+    4. ``os.cpu_count()``.
+
+    Why this is not just a core count. ``/proc/cpuinfo`` describes the MACHINE, not the
+    allocation, so on a shared cluster node it over-reports badly: a 112-core node with
+    ``--cpus-per-task=16`` returned 112, Schrodinger's job server was told to run 112
+    subjobs inside a 16-cpu cgroup, and Glide exited rc=1 after ~3 seconds with nothing
+    but a hosts-file warning on stderr. LigPrep survived it (it degrades gracefully),
+    which made the failure look Glide-specific rather than a slot-count problem.
     """
+    env_host = os.environ.get("SCHRODINGER_HOST", "")
+    if env_host.startswith("localhost:"):
+        try:
+            n = int(env_host.split(":", 1)[1])
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+
+    # The scheduler's allocation, when there is one.
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            allowed = len(os.sched_getaffinity(0))
+            if allowed > 0:
+                return allowed
+        except OSError:
+            pass
+
     try:
         with open("/proc/cpuinfo") as f:
             cores = set()

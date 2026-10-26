@@ -8,7 +8,12 @@ from unittest import mock
 import pytest
 import yaml
 
-from pdchemchain.config import get_tool_path, get_schrodinger_path, ensure_schrodinger_job_server
+from pdchemchain.config import (
+    get_tool_path,
+    get_schrodinger_path,
+    ensure_schrodinger_job_server,
+    get_num_physical_cores,
+)
 
 
 class TestGetToolPath:
@@ -94,3 +99,41 @@ class TestEnsureSchrodingerJobServer:
         with mock.patch("pdchemchain.config.subprocess.run", side_effect=[status_result, start_result]):
             with pytest.raises(RuntimeError, match="Failed to start"):
                 ensure_schrodinger_job_server(schrodinger_path="/test/schrodinger")
+
+
+class TestGetNumPhysicalCores:
+    """Slot count must reflect the ALLOCATION, not the machine.
+
+    /proc/cpuinfo describes the host, so on a shared cluster node it over-reports badly.
+    A 112-core node under --cpus-per-task=16 reported 112, Schrodinger was told to run
+    112 subjobs inside a 16-cpu cgroup, and Glide exited rc=1 within seconds on every
+    call -- with nothing but a hosts-file warning on stderr.
+    """
+
+    def test_schrodinger_host_wins(self):
+        with mock.patch.dict(os.environ, {"SCHRODINGER_HOST": "localhost:16"}):
+            assert get_num_physical_cores() == 16
+
+    def test_malformed_schrodinger_host_falls_back(self):
+        with mock.patch.dict(os.environ, {"SCHRODINGER_HOST": "localhost:notanumber"}):
+            assert get_num_physical_cores() > 0
+
+    def test_zero_slots_ignored(self):
+        with mock.patch.dict(os.environ, {"SCHRODINGER_HOST": "localhost:0"}):
+            assert get_num_physical_cores() > 0
+
+    def test_non_localhost_host_ignored(self):
+        """A remote host string says nothing about local slot count."""
+        with mock.patch.dict(os.environ, {"SCHRODINGER_HOST": "somehost:8"}):
+            with mock.patch("os.sched_getaffinity", return_value=set(range(4))):
+                assert get_num_physical_cores() == 4
+
+    def test_falls_back_to_cpu_affinity(self):
+        """What SLURM actually restricts the process to."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("os.sched_getaffinity", return_value=set(range(16))):
+                assert get_num_physical_cores() == 16
+
+    def test_never_returns_zero(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert get_num_physical_cores() >= 1

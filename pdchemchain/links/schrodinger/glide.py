@@ -406,8 +406,25 @@ class GlideDock(Link):
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(tmpdir))
 
         if result.returncode != 0:
+            # Glide writes its actual diagnosis to glide.log / glide_subjobs.log in the
+            # job directory, NOT to stderr -- stderr typically carries only warnings. Since
+            # the tempdir is removed afterwards, logging stderr alone leaves a failure with
+            # no cause: a real run came back with nothing but "The custom schrodinger.hosts
+            # file ... is being ignored", while the FATAL ERROR explaining it sat in
+            # glide.log and was deleted. Surface the log tails here instead.
+            details = []
+            for name in ("glide.log", "glide_subjobs.log"):
+                log_path = tmpdir / name
+                try:
+                    tail = log_path.read_text().strip().splitlines()[-15:]
+                except OSError:
+                    continue
+                if tail:
+                    details.append(f"--- {name} (tail) ---\n" + "\n".join(tail))
+
             self.logger.error(
                 f"Glide failed (rc={result.returncode}): {result.stderr}"
+                + ("\n" + "\n".join(details) if details else "")
             )
 
         # Find and parse output
