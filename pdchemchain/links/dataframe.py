@@ -326,7 +326,14 @@ class GroupPick(Link):
         )
 
         if valid_df.empty:
-            result = error_df
+            # Every row errored (e.g. the docking backend failed wholesale). Still collapse
+            # to one row per group, or this returns the EXPANDED frame -- more rows out than
+            # groups in -- which is worse than reordering for any positional consumer.
+            result = (
+                error_df.groupby(self.group_by).first().reset_index()
+                if not error_df.empty
+                else error_df
+            )
         else:
             best_idx, nan_groups = self._get_best_indices(valid_df)
             best_df = valid_df.loc[best_idx]
@@ -361,6 +368,17 @@ class GroupPick(Link):
                     )
 
             result = best_df
+
+        # Restore the input's group order, for BOTH branches above. The picks, the all-NaN
+        # representatives and the error-only representatives are concatenated, and
+        # groupby().first() sorts by key, so without this the output order is neither the
+        # input's nor stable. The row *count* is correct either way, which is what makes
+        # this easy to miss -- and a consumer that reads columns positionally (the REINVENT
+        # PdChemChain scoring component does) then attaches every value to the wrong
+        # molecule, with nothing raising.
+        if not result.empty:
+            order = df[self.group_by].drop_duplicates()
+            result = result.set_index(self.group_by).reindex(order).reset_index()
 
         if self.drop_group_columns:
             for col in ["__id__", "__enum_id__"]:
