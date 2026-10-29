@@ -15,6 +15,8 @@ from pdchemchain.config import ensure_schrodinger_job_server, get_num_physical_c
 from pdchemchain.errormanager import has_error
 from pdchemchain.typing import InColumnName, Partitionable
 
+from ._dump import DumpOnFailureMixin
+
 
 def _parse_variant_tag(variant_tag: str) -> tuple[str, str]:
     """Parse s_lp_Variant tag to extract original title and variant number.
@@ -133,7 +135,7 @@ def _read_output_sdf(filepath: Path) -> list[tuple[str, str, Chem.rdchem.Mol]]:
 
 
 @dataclass
-class LigPrep(Link):
+class LigPrep(DumpOnFailureMixin, Link):
     """Prepare ligands using Schrodinger LigPrep.
 
     Supports SMILES input (writes .smi file) or ROMol input (writes .sdf file).
@@ -191,6 +193,10 @@ class LigPrep(Link):
     njobs: int = 1
     schrodinger_path: str = None
     keep_tempdir: bool = False
+    # Where to write dump.log on a BATCH-level failure (non-zero exit, or nothing produced
+    # for the whole batch). None uses ~/pdchemchain_dumps/. Per-row failures never dump --
+    # those are ordinary stochastic output of a generative run.
+    dump_dir: str = None
 
     _partitionable = Partitionable.YES
 
@@ -238,10 +244,7 @@ class LigPrep(Link):
         try:
             return self._run_ligprep(df_input, tmpdir, is_mol_input)
         finally:
-            if not self.keep_tempdir:
-                shutil.rmtree(tmpdir, ignore_errors=True)
-            else:
-                self.logger.info(f"LigPrep temp directory kept at: {tmpdir}")
+            self._cleanup_tempdir(tmpdir)
 
     def _run_ligprep(
         self, df: pd.DataFrame, tmpdir: Path, is_mol_input: bool
@@ -279,12 +282,22 @@ class LigPrep(Link):
 
         if result.returncode != 0:
             self.logger.error(f"LigPrep failed (rc={result.returncode}): {result.stderr}")
+            self._record_failure(
+                f"ligprep exited rc={result.returncode}", cmd, tmpdir, result
+            )
 
         # Parse output
         parsed = _read_output_sdf(output_file)
         self.logger.info(
             f"LigPrep: {len(written_keys)} input → {len(parsed)} output molecules"
         )
+        if written_keys and not parsed:
+            # Nothing prepared for ANY molecule. A batch-level failure even at rc == 0:
+            # indistinguishable from the backend silently producing nothing, which is
+            # exactly how the 2026-10-27 job-server outage presented.
+            self._record_failure(
+                "no molecules prepared for the whole batch", cmd, tmpdir, result
+            )
 
         # Build expanded DataFrame
         return self._build_expanded_df(df, written_keys, parsed)

@@ -16,6 +16,8 @@ from pdchemchain.config import get_num_physical_cores, get_schrodinger_path, ens
 from pdchemchain.errormanager import has_error
 from pdchemchain.typing import InColumnName, Partitionable
 
+from ._dump import DumpOnFailureMixin
+
 
 # Default score columns to import (primary binding energy + ligand strain)
 _DEFAULT_SCORES = {
@@ -148,7 +150,7 @@ def _parse_output_csv(
 
 
 @dataclass
-class PrimeMMGBSA(Link):
+class PrimeMMGBSA(DumpOnFailureMixin, Link):
     """Estimate binding free energy using Schrodinger Prime MM-GBSA.
 
     Runs ``prime_mmgbsa`` on docked poses with a receptor structure. Input
@@ -216,6 +218,10 @@ class PrimeMMGBSA(Link):
     overrides: dict = field(default_factory=dict)
     schrodinger_path: str = None
     keep_tempdir: bool = False
+    # Where to write dump.log on a BATCH-level failure (non-zero exit, or nothing produced
+    # for the whole batch). None uses ~/pdchemchain_dumps/. Per-row failures never dump --
+    # those are ordinary stochastic output of a generative run.
+    dump_dir: str = None
 
     _partitionable = Partitionable.YES
 
@@ -235,10 +241,7 @@ class PrimeMMGBSA(Link):
         try:
             return self._run_mmgbsa(df_result, tmpdir)
         finally:
-            if not self.keep_tempdir:
-                shutil.rmtree(tmpdir, ignore_errors=True)
-            else:
-                self.logger.info(f"PrimeMMGBSA temp directory kept at: {tmpdir}")
+            self._cleanup_tempdir(tmpdir)
 
     def _run_mmgbsa(self, df: pd.DataFrame, tmpdir: Path) -> pd.DataFrame:
         schrodinger = get_schrodinger_path(self.schrodinger_path)
@@ -291,12 +294,16 @@ class PrimeMMGBSA(Link):
             self.logger.error(
                 f"prime_mmgbsa failed (rc={result.returncode}): {result.stderr}"
             )
+            self._record_failure(
+                f"prime_mmgbsa exited rc={result.returncode}", cmd, tmpdir, result
+            )
 
         # Parse output CSV (predictable name from -jobname)
         output_csv = tmpdir / f"{_JOBNAME}-out.csv"
         if not output_csv.exists():
             self.logger.warning("PrimeMMGBSA: no output CSV found")
             scores_by_key = {}
+            self._record_failure("no output CSV produced", cmd, tmpdir, result)
         else:
             scores_by_key = _parse_output_csv(output_csv, self.all_scores)
             self.logger.info(

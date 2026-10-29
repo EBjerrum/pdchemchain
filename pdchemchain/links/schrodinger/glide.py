@@ -16,6 +16,8 @@ from pdchemchain.config import ensure_schrodinger_job_server, get_num_physical_c
 from pdchemchain.errormanager import has_error
 from pdchemchain.typing import InColumnName, Partitionable
 
+from ._dump import DumpOnFailureMixin
+
 
 # Keys always managed by the link — removed from user .in file before appending ours
 _MANAGED_KEYS = {"LIGANDFILE", "POSE_OUTTYPE", "POSES_PER_LIG", "GRIDFILE"}
@@ -260,7 +262,7 @@ def _read_docked_sdf(
 
 
 @dataclass
-class GlideDock(Link):
+class GlideDock(DumpOnFailureMixin, Link):
     """Dock molecules using Schrodinger Glide.
 
     Two usage modes:
@@ -336,6 +338,10 @@ class GlideDock(Link):
     njobs: int = 1
     schrodinger_path: str = None
     keep_tempdir: bool = False
+    # Where to write dump.log on a BATCH-level failure (non-zero exit, or no output at
+    # all). None uses ~/pdchemchain_dumps/. Per-row failures never dump -- those are
+    # ordinary stochastic output of a generative run.
+    dump_dir: str = None
 
     _partitionable = Partitionable.YES
 
@@ -353,10 +359,7 @@ class GlideDock(Link):
         try:
             return self._run_glide(df_input, tmpdir)
         finally:
-            if not self.keep_tempdir:
-                shutil.rmtree(tmpdir, ignore_errors=True)
-            else:
-                self.logger.info(f"GlideDock temp directory kept at: {tmpdir}")
+            self._cleanup_tempdir(tmpdir)
 
     def _run_glide(self, df: pd.DataFrame, tmpdir: Path) -> pd.DataFrame:
         # Write ligands to SDF
@@ -426,6 +429,13 @@ class GlideDock(Link):
                 f"Glide failed (rc={result.returncode}): {result.stderr}"
                 + ("\n" + "\n".join(details) if details else "")
             )
+            self._record_failure(
+                f"glide exited rc={result.returncode}",
+                cmd,
+                tmpdir,
+                result,
+                extra="\n\n".join(details) if details else None,
+            )
 
         # Find and parse output
         if self.output_format == "mae":
@@ -436,6 +446,9 @@ class GlideDock(Link):
         if output_file is None:
             self.logger.warning("GlideDock: no output file found")
             parsed = []
+            # Batch-level failure even when rc == 0: nothing was produced for ANY molecule,
+            # which is indistinguishable from the backend silently doing nothing.
+            self._record_failure("no output file produced", cmd, tmpdir, result)
         else:
             if self.output_format == "mae":
                 parsed = _read_docked_mae(output_file)
