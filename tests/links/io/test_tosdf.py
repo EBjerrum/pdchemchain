@@ -79,3 +79,39 @@ class TestToSDF(BaseTest):
         # int2 and letters1 should not be present
         assert "int2" not in df_loaded.columns
         assert "letters1" not in df_loaded.columns
+
+    def test_gzip_roundtrip(self, sample_dataframe, tmpdir):
+        """Test that a .gz filename writes gzip-compressed SDF readable by LoadSDF"""
+        filename = str(tmpdir) + "/sub/poses.sdf.gz"
+        ToSDF(filename=filename)(sample_dataframe)
+
+        with open(filename, "rb") as f:
+            assert f.read(2) == b"\x1f\x8b"  # gzip magic
+        df_loaded = PandasTools.LoadSDF(filename, molColName="ROMol")
+        assert len(df_loaded) == len(sample_dataframe)
+
+    def test_increment_basename(self, sample_dataframe, tmpdir):
+        """Test numbered files per call, continuing after existing files"""
+        filename = str(tmpdir) + "/pose_dumps/poses.sdf.gz"
+        link = ToSDF(filename=filename, increment_basename=True)
+        link(sample_dataframe)
+        link(sample_dataframe)
+        # A fresh instance (e.g. restarted run) must not overwrite
+        ToSDF(filename=filename, increment_basename=True)(sample_dataframe)
+
+        assert sorted(os.listdir(str(tmpdir) + "/pose_dumps")) == [
+            "poses_00000.sdf.gz",
+            "poses_00001.sdf.gz",
+            "poses_00002.sdf.gz",
+        ]
+        assert "_batch_index" not in link.get_params()
+
+    def test_other_mol_columns_excluded(self, sample_dataframe, save_filename):
+        """Test that other molecule columns are not written as object-repr properties"""
+        df = sample_dataframe.copy()
+        df["Pose"] = df["ROMol"]
+        ToSDF(filename=save_filename)(df)
+
+        df_loaded = PandasTools.LoadSDF(save_filename, molColName="ROMol")
+        assert "Pose" not in df_loaded.columns
+        assert "int1" in df_loaded.columns

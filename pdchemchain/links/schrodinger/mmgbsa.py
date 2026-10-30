@@ -262,6 +262,8 @@ class PrimeMMGBSA(DumpOnFailureMixin, Link):
             )
             if errors.notna().any():
                 df = self.append_errors(df, errors)
+            df[self.score_column] = np.nan
+            df[self.strain_column] = np.nan
             return df
 
         input_mae = tmpdir / f"{_JOBNAME}_pv.mae"
@@ -331,13 +333,10 @@ class PrimeMMGBSA(DumpOnFailureMixin, Link):
     ) -> pd.DataFrame:
         errors = pd.Series([None] * len(df), index=df.index, dtype="object")
 
-        # Determine which score columns to initialize
-        if scores_by_key:
-            all_score_names = set()
-            for scores in scores_by_key.values():
-                all_score_names.update(scores.keys())
-        else:
-            all_score_names = {self.score_column, self.strain_column}
+        # Determine which score columns to initialize (main columns always present)
+        all_score_names = {self.score_column, self.strain_column}
+        for scores in scores_by_key.values():
+            all_score_names.update(scores.keys())
 
         # Initialize score columns with NaN
         for col in all_score_names:

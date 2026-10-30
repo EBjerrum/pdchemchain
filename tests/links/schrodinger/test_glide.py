@@ -352,3 +352,13 @@ class TestGlideDockLink:
         assert list(result["__id__"]) == [0, 0]
         assert result.iloc[0]["docking_score"] == -8.5
         assert result.iloc[1]["docking_score"] == -7.2
+
+    def test_build_result_df_all_failed_keeps_columns(self):
+        """Test that output columns exist even when no molecule docked."""
+        dock = GlideDock(grid_file="/grid.zip")
+        df = pd.DataFrame({"__ROMolLigPrep__": [Chem.MolFromSmiles("CCO")]})
+
+        result = dock._build_result_df(df, ["0"], [])
+
+        assert result["__ROMolDocked__"].isna().all()
+        assert np.isnan(result.iloc[0]["docking_score"])

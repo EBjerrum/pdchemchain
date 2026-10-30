@@ -189,4 +189,34 @@ print(f"Pipeline has {len(full_pipeline.links)} links")
 # Save for CLI reuse:
 full_pipeline.to_config_file("schrodinger_pipeline.yaml")
 # Then run: pdchemchain run schrodinger_pipeline.yaml --in_file ligands.csv --out_file results.csv
+
+# %% ===== Docking chain for REINVENT scoring, with pose dumps =====
+# The REINVENT PdChemChain component runs the chain once per batch and only keeps the
+# score columns. To keep the docked poses, add a ToSDF link after aggregation:
+#   increment_basename=True → one numbered file per call (poses_00000.sdf.gz, poses_00001.sdf.gz, ...)
+#   .gz suffix              → gzip-compressed SDF (~7x smaller, readable by Maestro, PyMOL, RDKit)
+# Existing files are never overwritten, so a restarted run continues the numbering.
+# All non-dunder columns (incl. Smiles, LigPrepSmiles, scores) are written as SD properties;
+# Smiles joins the poses back to REINVENT's output CSV.
+from pdchemchain.links import ToSDF
+
+pose_dump = ToSDF(
+    filename="pose_dumps/poses.sdf.gz",
+    mol_column="__ROMolDocked__",
+    increment_basename=True,
+)
+
+docking_chain = ligprep + glide + agg + pose_dump
+df_scored = docking_chain(df)
+
+print(sorted(Path("pose_dumps").glob("*.sdf.gz")))
+docking_chain.to_config_file("docking_chain.yaml")
+# In the REINVENT TOML: params.config_file = "docking_chain.yaml", params.score_column = "docking_score"
+# and params.smiles_column = "Smiles" to match the LigPrep in_column used here.
+
+# %% Load the dumped poses back
+from rdkit.Chem import PandasTools
+
+df_poses = PandasTools.LoadSDF("pose_dumps/poses_00000.sdf.gz", molColName="__ROMolDocked__")
+df_poses[["Smiles", "LigPrepSmiles", "docking_score"]].head()
 # %%

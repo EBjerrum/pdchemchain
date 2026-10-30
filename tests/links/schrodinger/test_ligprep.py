@@ -291,3 +291,13 @@ class TestLigPrepLink:
         # Row for compound 1 should have error
         error_row = result[result["__id__"] == 1].iloc[0]
         assert "no output produced" in error_row["__error__"]
+
+    def test_build_expanded_df_all_failed_keeps_columns(self):
+        """Test that output columns exist even when no molecule was prepared."""
+        lp = LigPrep()
+        df = pd.DataFrame({"Smiles": ["CCO"]})
+
+        result = lp._build_expanded_df(df, ["0"], [])
+
+        assert result["__ROMolLigPrep__"].isna().all()
+        assert result["LigPrepSmiles"].isna().all()

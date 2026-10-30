@@ -268,7 +268,7 @@ class LigPrep(DumpOnFailureMixin, Link):
             )
             if errors.notna().any():
                 df = self.append_errors(df, errors)
-            return df
+            return self._ensure_output_columns(df)
 
         output_file = tmpdir / "output.sdf"
 
@@ -365,4 +365,12 @@ class LigPrep(DumpOnFailureMixin, Link):
 
         result_df = pd.DataFrame(expanded_rows)
         result_df = result_df.reset_index(drop=True)
-        return result_df
+        return self._ensure_output_columns(result_df)
+
+    def _ensure_output_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create missing output columns so downstream links see them even if all preparation failed."""
+        if self.out_mol_column not in df.columns:
+            df[self.out_mol_column] = None
+        if self.out_smiles_column not in df.columns:
+            df[self.out_smiles_column] = None
+        return df

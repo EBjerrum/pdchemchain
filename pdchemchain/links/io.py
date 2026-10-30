@@ -1,3 +1,5 @@
+import gzip
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -235,12 +237,21 @@ class ToSDF(Link):
     Parameters
     ----------
     filename : str
-        Path to the SDF file to write
+        Path to the SDF file to write. A ``.gz`` suffix (e.g. ``poses.sdf.gz``)
+        writes gzip-compressed SDF. Parent directories are created if missing.
     mol_column : InColumnName
         Column name containing RDKit molecule objects (default: "ROMol")
     properties : Optional[List[str]]
         List of column names to write as SD properties.
-        If None (default), writes all columns except the molecule column.
+        If None (default), writes all columns except the molecule column,
+        dunder columns and other molecule columns (logged).
+    increment_basename : bool
+        If True, each call writes a new file with a zero-padded counter inserted
+        before the extension (``poses.sdf.gz`` -> ``poses_00000.sdf.gz``,
+        ``poses_00001.sdf.gz``, ...). Existing files are never overwritten, so a
+        restarted run continues the numbering. Useful for dumping every batch of
+        a long running chain, e.g. docking poses in a REINVENT run.
+        Default: False
     handle_none : str
         How to handle None/missing molecules. Options:
         - False: Fail if None molecules are present (safe but strict behavior)
@@ -257,15 +268,36 @@ class ToSDF(Link):
     wildcard atoms (*) labeled "ERROR" with MolWt=0. This allows saving error rows
     to SDF while making it obvious they are placeholders. Use FromSDF with
     recognize_placeholders=True to convert them back to None on loading.
+
+    Examples
+    --------
+    >>> # Dump the docked poses of every REINVENT batch after aggregation
+    >>> ToSDF("pose_dumps/poses.sdf.gz", mol_column="__ROMolDocked__",
+    ...       increment_basename=True)
     """
 
     filename: str
     mol_column: InColumnName = "ROMol"
     properties: Optional[List[str]] = None
     handle_none: bool | str = True
+    increment_basename: bool = False
     sdf_write_options: Dict[str, any] = field(default_factory=dict)
 
+    def _next_filename(self) -> str:
+        """Return the first unused numbered filename, starting after the last one written."""
+        compressed = self.filename.endswith(".gz")
+        base, ext = os.path.splitext(self.filename[:-3] if compressed else self.filename)
+        if compressed:
+            ext += ".gz"
+        # ponytail: exists-check is not atomic, parallel writers to the same basename could collide
+        index = getattr(self, "_batch_index", 0)
+        while os.path.exists(f"{base}_{index:05d}{ext}"):
+            index += 1
+        self._batch_index = index + 1
+        return f"{base}_{index:05d}{ext}"
+
     def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        from rdkit import Chem
         from rdkit.Chem import PandasTools
 
         df_copy = df.copy()
@@ -300,16 +332,42 @@ class ToSDF(Link):
                 for col in df_copy.columns
                 if col != self.mol_column and not col.startswith("__")
             ]
+            # Other Mol columns would be written as "<rdkit.Chem.rdchem.Mol object at ...>"
+            other_mol_columns = [
+                col
+                for col in props
+                if df_copy[col].dtype == object
+                and isinstance(next(iter(df_copy[col].dropna()), None), Chem.Mol)
+            ]
+            if other_mol_columns:
+                self.logger.info(
+                    f"Not writing other molecule columns as SD properties: {other_mol_columns}"
+                )
+                props = [col for col in props if col not in other_mol_columns]
 
-        PandasTools.WriteSDF(
-            df_copy,
-            self.filename,
-            molColName=self.mol_column,
-            properties=props,
-            **self.sdf_write_options,
-        )
+        filename = self._next_filename() if self.increment_basename else self.filename
+        if os.path.dirname(filename):
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+        if filename.endswith(".gz"):
+            with gzip.open(filename, "wt") as file_handle:
+                PandasTools.WriteSDF(
+                    df_copy,
+                    file_handle,
+                    molColName=self.mol_column,
+                    properties=props,
+                    **self.sdf_write_options,
+                )
+        else:
+            PandasTools.WriteSDF(
+                df_copy,
+                filename,
+                molColName=self.mol_column,
+                properties=props,
+                **self.sdf_write_options,
+            )
 
         self.logger.info(
-            f"Saved dataframe to SDF file {self.filename} " f"with {len(props)} properties"
+            f"Saved dataframe to SDF file {filename} " f"with {len(props)} properties"
         )
         return df

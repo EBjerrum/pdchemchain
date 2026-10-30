@@ -226,3 +226,13 @@ class TestPrimeMMGBSALink:
         assert result.iloc[0]["mmgbsa_dg_bind"] == pytest.approx(-81.5)
         assert np.isnan(result.iloc[1]["mmgbsa_dg_bind"])
         assert "no result returned" in str(result.iloc[1].get("__error__", ""))
+
+    def test_merge_scores_all_scores_partial_keeps_main_columns(self):
+        """Test that main score columns exist even if the parsed scores lack them."""
+        link = PrimeMMGBSA(receptor_file="/recep.mae")
+        df = pd.DataFrame({"__ROMolDocked__": [Chem.MolFromSmiles("CCO")]})
+
+        result = link._merge_scores(df, ["0"], {"0": {"mmgbsa_other": 1.0}})
+
+        assert np.isnan(result.iloc[0]["mmgbsa_dg_bind"])
+        assert np.isnan(result.iloc[0]["mmgbsa_lig_strain"])
