@@ -194,6 +194,24 @@ class GroupPick(Link):
     that column is truthy are considered. Groups with no eligible rows get no pick
     (tag mode) or are dropped (collapse mode, unless error-only).
 
+    Partitioning
+    ------------
+    Reported as ``Partitionable.MAYBE`` when ``group_by="__id__"`` and
+    ``Partitionable.NO`` otherwise, so a partition processor warns rather than refuses in
+    the docking case.
+
+    It is safe to partition only if **every member of a group is created inside the
+    partition**. That holds for the usual docking chain, where ``LigPrep`` expands each
+    input row into protomer/tautomer variants sharing its ``__id__``: the variants are
+    generated within the partition, so no group straddles a partition boundary and the
+    per-partition pick is the global pick.
+
+    It does NOT hold if ``__id__`` (or any grouping column) was assigned **before** the
+    partitioned chain, because the rows of one group can then land in different
+    partitions. Each partition picks its own winner, the row count stays plausible, and
+    the result is wrong with no error. Check where the grouping column comes from before
+    dismissing the warning.
+
     Parameters
     ----------
     group_by : str
@@ -237,10 +255,27 @@ class GroupPick(Link):
     pick_noise: bool = False
     drop_group_columns: bool = False
 
+    # Set per instance in __post_init__: it depends entirely on `group_by`.
     _partitionable = Partitionable.NO
 
     def __post_init__(self):
         super().__post_init__()
+        # MAYBE for `__id__`, NO for anything else -- and MAYBE rather than YES on purpose.
+        #
+        # `__id__` is a row identity within the frame, and in the usual docking chain
+        # (LigPrep expands one input row into protomer/tautomer variants that all carry its
+        # `__id__`) every member of a group is created INSIDE the partition, so a group
+        # cannot straddle two partitions and the per-partition pick is the global pick.
+        #
+        # But that depends on where `__id__` came from. If it was assigned OUTSIDE the
+        # partitioned chain, its groups can be scattered across partitions, and then each
+        # partition returns its own winner -- silently, with a plausible row count. We
+        # cannot tell the two cases apart from here, so warn rather than allow.
+        #
+        # Any other `group_by` names a real data column: assume its members are scattered.
+        self._partitionable = (
+            Partitionable.MAYBE if self.group_by == "__id__" else Partitionable.NO
+        )
         if self.mode not in ("min", "max"):
             raise ValueError(f"mode must be 'min' or 'max', got '{self.mode}'")
         if self.action not in ("tag", "collapse"):

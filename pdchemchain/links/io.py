@@ -10,6 +10,23 @@ from pdchemchain.io_utilities import df_process_to_csv
 from pdchemchain.typing import InColumnName
 
 
+def enable_mol_property_pickling() -> None:
+    """Make RDKit include molecule properties when pickling.
+
+    RDKit's default pickle keeps atoms, bonds and conformers but DROPS molecule-level
+    properties, so a round-trip silently loses exactly the SD tags worth keeping -- for a
+    Glide pose, ``r_i_docking_score``, ``s_glide_core_smarts``, the per-constraint
+    satisfaction flags. The loss is invisible: the Mol comes back valid, just bare.
+
+    This is a GLOBAL RDKit setting, not a per-call argument, so any process that reads or
+    writes a pickled frame of molecules has to call it -- including a worker on another
+    machine. :class:`ToPickle` and :class:`FromPickle` call it for you.
+    """
+    from rdkit import Chem
+
+    Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
+
+
 def _generate_romol(df: pd.DataFrame, smiles_column: str, logger) -> pd.DataFrame:
     """(Re)generate ROMol column from a SMILES column, overwriting any existing ROMol."""
     from pdchemchain.links.chemistry import MolFromSmiles
@@ -114,6 +131,87 @@ class ToFile(Link):
         df_process_to_csv(df, self.filename, **self.pd_tocsv_options)
         self.logger.info(f"Saved dataframe with basename {self.filename}")
         return df
+
+
+@dataclass
+class ToPickle(Link):
+    """Writes the dataframe to a pickle, molecule properties and all.
+
+    The only format here that round-trips a dataframe FAITHFULLY: several Mol columns at
+    once, 3D conformers, molecule-level SD properties, fingerprint bit vectors, NaNs and
+    arbitrary Python objects. :class:`ToSDF` carries one Mol column and flattens the rest
+    to SD tags; CSV loses every object column; parquet raises on a Mol unless each such
+    column is hand-encoded to bytes first (and comes out roughly twice the size).
+
+    That makes it the right format for handing a partition to another process or machine --
+    see :class:`~pdchemchain.links.hpc.SlurmPartitionProcessor`, which appends one of
+    these to the inner chain. It is a pass-through link, so it can sit anywhere in a chain.
+
+    NOT AN ARCHIVE FORMAT. A pickle can break across pandas or RDKit versions, and loading
+    one executes arbitrary code, so read only pickles your own job wrote. For a deliverable
+    use :class:`ToSDF` or :class:`ToFile`.
+
+    Parameters
+    ----------
+    filename : str
+        Path to write. A ``.gz``/``.bz2``/``.zst`` suffix compresses (pandas infers it);
+        gzip takes a molecule frame to about 15% of raw for a little CPU.
+    pd_topickle_options : Dict[str, any]
+        Extra keyword arguments for pandas ``to_pickle`` (e.g. ``compression``,
+        ``protocol``).
+
+    Examples
+    --------
+    >>> # Stage a partition for a worker on another machine
+    >>> chain = inner_chain + ToPickle("work/shard_003.out.pkl")
+    """
+
+    filename: str
+    pd_topickle_options: Dict[str, any] = field(default_factory=dict)
+
+    def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        enable_mol_property_pickling()
+        parent = os.path.dirname(self.filename)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        df.to_pickle(self.filename, **self.pd_topickle_options)
+        self.logger.info(f"Pickled dataframe ({len(df)} rows) to {self.filename}")
+        return df
+
+
+@dataclass
+class FromPickle(Link):
+    """Reads a dataframe from a pickle written by :class:`ToPickle`.
+
+    Sets RDKit's property-preserving pickle mode before reading, so molecule properties
+    come back rather than being silently dropped. See :class:`ToPickle` for why this is the
+    faithful format and why it is not an archive format.
+
+    Parameters
+    ----------
+    filename : str
+        Path to read. Compression is inferred from the suffix.
+    pd_readpickle_options : Dict[str, any]
+        Extra keyword arguments for pandas ``read_pickle``.
+
+    Examples
+    --------
+    >>> chain = FromPickle("work/shard_003.pkl") + GlideDock(...) + ToPickle("out.pkl")
+    """
+
+    filename: str
+    pd_readpickle_options: Dict[str, any] = field(default_factory=dict)
+
+    def _apply(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        enable_mol_property_pickling()
+        if df is not None and not df.empty:
+            self.logger.warning(
+                f"Input dataframe received in FromPickle is not empty as expected but "
+                f"contained {len(df)} rows, possible error as it will get overwritten"
+            )
+        out = pd.read_pickle(self.filename, **self.pd_readpickle_options)
+        self.logger.info(f"Read dataframe ({len(out)} rows) from {self.filename}")
+        return out
 
 
 @dataclass

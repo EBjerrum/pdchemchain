@@ -247,6 +247,35 @@ class Link(ABC, SelfConfigurable):
             workers = psutil.cpu_count(logical=False)
         return ParallelPartitionProcessor(link=self, num_processes=workers, num_partitions=2 * workers)
 
+    def slurm(self, partitions: int, **kwargs) -> "SlurmPartitionProcessor":
+        """Wrap this link in a SlurmPartitionProcessor: one SLURM array task per partition.
+
+        The cluster counterpart of :meth:`parallel`. Unlike ``parallel`` there is no
+        sensible default partition count -- it depends on the queue, the walltime per
+        compound and any licence limit -- so it is required.
+
+        BLOCKS until the whole array finishes, and raises if any task produces no output
+        (see the class for the failure policy). Must run on a submit host.
+
+        Parameters
+        ----------
+        partitions
+            Number of shards, i.e. array tasks.
+        **kwargs
+            Passed to :class:`~pdchemchain.links.hpc.SlurmPartitionProcessor`:
+            ``work_dir``, ``sbatch_directives``, ``preamble``, ``max_concurrent``,
+            ``poll_interval``, ``timeout``, ``cleanup``, ``job_name``,
+            ``python_executable``.
+
+        Examples
+        --------
+        >>> dock = LigPrep(njobs=4) + GlideDock(grid_file=grid, njobs=4)
+        >>> result = dock.slurm(40, work_dir="redock_work",
+        ...                     sbatch_directives=["--time=08:00:00", "--mem=16G"])(df)
+        """
+        from pdchemchain.links.hpc import SlurmPartitionProcessor
+        return SlurmPartitionProcessor(link=self, num_partitions=partitions, **kwargs)
+
     # Error handling for df level
     def _concatenate_strings(self, str1, str2) -> str:
         """Combine two variables that may be strings or None/float('nan), in a safe way"""

@@ -1,6 +1,6 @@
 import copy
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import os
 import sys
 
@@ -9,6 +9,8 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import Descriptors, PandasTools, RDConfig, rdFingerprintGenerator
 from rdkit.Chem.MolStandardize import rdMolStandardize
+from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.DataStructs import ExplicitBitVect
 from rdkit.ML.Descriptors.MoleculeDescriptors import MolecularDescriptorCalculator
 #Allow import of sascorer
 sys.path.append(os.path.join(RDConfig.RDContribDir, 'SA_Score'))
@@ -530,6 +532,231 @@ class MolToFingerprint(RowLink):
 
     def _row_apply(self, row: pd.Series) -> pd.Series:
         row[self.out_column] = self.fingerprinter.GetFingerprint(row[self.in_column])
+        return row
+
+
+@dataclass
+class ScaffoldFingerprint(RowLink):
+    """Morgan fingerprint of a molecule's Murcko or generic scaffold.
+
+    Intended for concatenation with a whole-molecule fingerprint (see
+    :class:`ConcatFingerprints`) so that clustering groups similar scaffolds together
+    rather than splitting them on side-chain differences. On a core-growing de novo set
+    the side chains carry most of the bits, so plain whole-molecule clustering separates
+    molecules that a chemist would call one series.
+
+    Molecules with no ring system have an empty Murcko scaffold and get an all-zero
+    fingerprint. Tanimoto against an all-zero vector is 0, so such molecules cluster
+    poorly -- the count is logged rather than raised.
+
+    Parameters
+    ----------
+    in_column
+        Column containing RDKit molecule objects.
+    out_column
+        Column to store the scaffold fingerprint.
+    generic
+        If True, abstract the scaffold to its topology (all atoms to carbon, all bonds
+        to single) via MakeScaffoldGeneric. Merges scaffolds differing only in
+        heteroatom placement.
+    radius
+        Morgan radius for the scaffold fingerprint. A larger radius than the
+        whole-molecule one emphasises scaffold context. Note that with
+        ``generic=True`` every atom becomes carbon, so descriptors keyed on atom
+        identity go degenerate -- only branching-pattern information survives, which is
+        why Morgan works here and path-based or atom-pair fingerprints do not.
+    n_bits
+        Length of the bit vector.
+    scaffold_column
+        Column to store the scaffold SMILES for inspection. None to skip.
+    """
+
+    in_column: InColumnName = "ROMol"
+    out_column: str = "__ScaffoldFP__"
+    generic: bool = False
+    radius: int = 2
+    n_bits: int = 2048
+    scaffold_column: Optional[str] = "ScaffoldSmiles"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self._fingerprinter = rdFingerprintGenerator.GetMorganGenerator(
+            radius=self.radius, fpSize=self.n_bits
+        )
+        self._n_empty = 0
+
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        mol = row[self.in_column]
+        scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+
+        if self.generic and scaffold.GetNumAtoms():
+            # MakeScaffoldGeneric can produce unsanitisable output; keep the plain
+            # Murcko scaffold if it does.
+            try:
+                generic = MurckoScaffold.MakeScaffoldGeneric(scaffold)
+                Chem.SanitizeMol(generic)
+                scaffold = generic
+            except Exception as exc:
+                self.logger.debug(f"MakeScaffoldGeneric failed, using Murcko: {exc}")
+
+        if scaffold.GetNumAtoms():
+            row[self.out_column] = self._fingerprinter.GetFingerprint(scaffold)
+        else:
+            self._n_empty += 1
+            row[self.out_column] = ExplicitBitVect(self.n_bits)
+
+        if self.scaffold_column:
+            row[self.scaffold_column] = Chem.MolToSmiles(scaffold)
+        return row
+
+
+def weights_for_share(
+    target_share: float,
+    mol_on_bits: float,
+    scaffold_on_bits: float,
+    max_weight: int = 8,
+) -> Tuple[int, int]:
+    """Integer ``(mol_weight, scaffold_weight)`` approximating a target scaffold share.
+
+    A block's influence in a concatenated Tanimoto is its weight times its ON-BIT COUNT,
+    not its weight alone. A generic-scaffold fingerprint has far fewer on-bits than a
+    whole-molecule one, so equal weights do NOT give the two blocks an equal say -- they
+    underweight the scaffold. Use this to pick weights from measured on-bit counts
+    instead of guessing a ratio.
+
+    Returns the pair whose achieved share is closest to the target, subject to both
+    weights being integers in ``[1, max_weight]``. Weighting the whole-molecule block up
+    (rather than only the scaffold) opens up the low-share region, which is where the
+    useful tuning lives: at high scaffold share Tanimoto degenerates towards "same
+    topology or not", giving over-separated islands and mega-clusters.
+
+    Parameters
+    ----------
+    target_share
+        Desired fraction of Tanimoto mass on the scaffold block, in (0, 1).
+    mol_on_bits, scaffold_on_bits
+        Mean on-bit counts of the two blocks. MEASURE THESE ON YOUR OWN DATA -- they
+        depend on radius, generic-vs-Murcko and molecule size.
+    max_weight
+        Largest replication factor to consider for either block.
+
+    Examples
+    --------
+    >>> weights_for_share(0.5, mol_on_bits=40.0, scaffold_on_bits=20.0)
+    (1, 2)
+    """
+    if not 0.0 < target_share < 1.0:
+        raise ValueError(f"target_share must be in (0, 1), got {target_share}")
+
+    best, best_err = (1, 1), float("inf")
+    for mol_w in range(1, max_weight + 1):
+        for scaf_w in range(1, max_weight + 1):
+            achieved = (scaf_w * scaffold_on_bits) / (
+                mol_w * mol_on_bits + scaf_w * scaffold_on_bits
+            )
+            err = abs(achieved - target_share)
+            # Prefer smaller weights on ties -- keeps the bit vector short.
+            if err < best_err - 1e-12:
+                best, best_err = (mol_w, scaf_w), err
+    return best
+
+
+@dataclass
+class ConcatFingerprints(RowLink):
+    """Concatenate fingerprint columns into one bit vector, with block weights.
+
+    Tanimoto over concatenated blocks is
+    ``sum_b w_b |A_b & B_b| / sum_b w_b |A_b | B_b|``, so a block's influence is its
+    weight TIMES its on-bit count. Since a scaffold fingerprint has fewer on-bits than a
+    whole-molecule one, plain concatenation (all weights 1) gives the scaffold LESS than
+    an equal say -- a 1:1 weight is not a 50/50 split.
+
+    Set ``target_scaffold_share`` to express the split directly and let the link measure
+    the on-bit counts and solve for the weights (via :func:`weights_for_share`); or pass
+    explicit integer ``weights`` if you already know them. Weights are integers because
+    they are implemented as exact block replication.
+
+    Parameters
+    ----------
+    in_columns
+        Fingerprint columns to concatenate, in order. With
+        ``target_scaffold_share`` set, exactly two are required and the SECOND is
+        treated as the scaffold block.
+    weights
+        Replication factor per input column. Must match in_columns in length. Ignored
+        when ``target_scaffold_share`` is set.
+    target_scaffold_share
+        Desired fraction of Tanimoto mass on the second block, in (0, 1). When set, the
+        weights are computed from the mean on-bit counts of this data.
+    out_column
+        Column to store the concatenated fingerprint.
+
+    Examples
+    --------
+    >>> # Give the scaffold a genuine half of the Tanimoto mass on THIS data
+    >>> ConcatFingerprints(in_columns=["__MolFP__", "__ScaffoldFP__"],
+    ...                    target_scaffold_share=0.5)
+    """
+
+    in_columns: List[str] = field(
+        default_factory=lambda: ["__MolFP__", "__ScaffoldFP__"]
+    )
+    weights: List[int] = field(default_factory=lambda: [1, 1])
+    target_scaffold_share: Optional[float] = None
+    out_column: str = "__ComboFP__"
+
+    _partitionable = Partitionable.NO  # weight solving needs the whole frame
+
+    def __post_init__(self):
+        super().__post_init__()
+        if len(self.in_columns) != len(self.weights):
+            raise ValueError(
+                f"in_columns ({len(self.in_columns)}) and weights "
+                f"({len(self.weights)}) must be the same length"
+            )
+        if any(w < 1 or int(w) != w for w in self.weights):
+            raise ValueError(f"weights must be positive integers, got {self.weights}")
+        if self.target_scaffold_share is not None and len(self.in_columns) != 2:
+            raise ValueError(
+                "target_scaffold_share requires exactly two in_columns "
+                f"(mol, scaffold), got {len(self.in_columns)}"
+            )
+
+    def _apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.target_scaffold_share is not None:
+            mol_bits, scaf_bits = (
+                float(np.mean([fp.GetNumOnBits() for fp in df[col]]))
+                for col in self.in_columns
+            )
+            self.weights = list(
+                weights_for_share(self.target_scaffold_share, mol_bits, scaf_bits)
+            )
+            achieved = (self.weights[1] * scaf_bits) / (
+                self.weights[0] * mol_bits + self.weights[1] * scaf_bits
+            )
+            self.logger.info(
+                f"ConcatFingerprints: mean on-bits {mol_bits:.1f} (mol) / "
+                f"{scaf_bits:.1f} (scaffold) -> weights {self.weights}, "
+                f"scaffold share {achieved:.3f} "
+                f"(target {self.target_scaffold_share})"
+            )
+        return super()._apply(df)
+
+    def _row_apply(self, row: pd.Series) -> pd.Series:
+        fps = [row[col] for col in self.in_columns]
+        sizes = [fp.GetNumBits() for fp in fps]
+        total = sum(size * w for size, w in zip(sizes, self.weights, strict=True))
+
+        combined = ExplicitBitVect(total)
+        offset = 0
+        for fp, size, weight in zip(fps, sizes, self.weights, strict=True):
+            on_bits = list(fp.GetOnBits())
+            for _ in range(weight):
+                for bit in on_bits:
+                    combined.SetBit(offset + bit)
+                offset += size
+
+        row[self.out_column] = combined
         return row
 
 
